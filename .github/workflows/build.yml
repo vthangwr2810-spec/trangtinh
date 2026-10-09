@@ -59,6 +59,12 @@ jobs:
               sourceCompatibility JavaVersion.VERSION_17
               targetCompatibility JavaVersion.VERSION_17
             }
+            packaging {
+              jniLibs {
+                useLegacyPackaging = true
+                keepDebugSymbols.add('**/*.so')
+              }
+            }
           }
           tasks.withType(JavaCompile) { options.encoding = 'UTF-8' }
           EOF
@@ -89,39 +95,180 @@ jobs:
             static final int[] DR = {-1, 1, 0, 0}, DC = {0, 0, -1, 1};
             static final int[] XR = {-1, -1, 1, 1}, XC = {-1, 1, -1, 1};
             static final int[] KR = {-2, -2, -1, -1, 1, 1, 2, 2}, KC = {-1, 1, -2, 2, -2, 2, -1, 1};
-            static final int[] V = {0, 1000, 20, 20, 45, 100, 48, 10};
-            static final int INF = 100000, MATE = 50000;
+            static final int[] V = {0, 10000, 40, 40, 90, 200, 96, 30};
+            static final int INF = 32000, MATE = 30000, MAXP = 80, TTB = 20, TSZ = 1 << TTB;
+
+            // Bảng điểm vị trí (góc nhìn quân dưới, hàng 0 = phía đối thủ)
+            static final int[] PN = {
+              4, 8, 16, 12, 4, 12, 16, 8, 4,
+              4, 10, 28, 16, 8, 16, 28, 10, 4,
+              12, 14, 16, 20, 18, 20, 16, 14, 12,
+              8, 24, 18, 24, 20, 24, 18, 24, 8,
+              6, 16, 14, 18, 16, 18, 14, 16, 6,
+              4, 12, 16, 14, 12, 14, 16, 12, 4,
+              2, 6, 8, 6, 10, 6, 8, 6, 2,
+              4, 2, 8, 8, 4, 8, 8, 2, 4,
+              0, 2, 4, 4, -2, 4, 4, 2, 0,
+              0, -4, 0, 0, 0, 0, 0, -4, 0};
+            static final int[] PR = {
+              14, 14, 12, 18, 16, 18, 12, 14, 14,
+              16, 20, 18, 24, 26, 24, 18, 20, 16,
+              12, 12, 12, 18, 18, 18, 12, 12, 12,
+              12, 18, 16, 22, 22, 22, 16, 18, 12,
+              12, 14, 12, 18, 18, 18, 12, 14, 12,
+              12, 16, 14, 20, 20, 20, 14, 16, 12,
+              6, 10, 8, 14, 14, 14, 8, 10, 6,
+              4, 8, 6, 14, 12, 14, 6, 8, 4,
+              8, 4, 8, 16, 8, 16, 8, 4, 8,
+              -2, 10, 6, 14, 12, 14, 6, 10, -2};
+            static final int[] PC = {
+              6, 4, 0, -10, -12, -10, 0, 4, 6,
+              2, 2, 0, -4, -14, -4, 0, 2, 2,
+              2, 2, 0, -10, -8, -10, 0, 2, 2,
+              0, 0, -2, 4, 10, 4, -2, 0, 0,
+              0, 0, 0, 2, 8, 2, 0, 0, 0,
+              -2, 0, 4, 2, 6, 2, 4, 0, -2,
+              0, 0, 0, 2, 4, 2, 0, 0, 0,
+              4, 0, 8, 6, 10, 6, 8, 0, 4,
+              0, 2, 4, 6, 6, 6, 4, 2, 0,
+              0, 0, 2, 6, 6, 6, 2, 0, 0};
+            static final int[] PP = {
+              9, 9, 9, 11, 13, 11, 9, 9, 9,
+              19, 24, 34, 42, 44, 42, 34, 24, 19,
+              19, 24, 32, 37, 37, 37, 32, 24, 19,
+              19, 23, 27, 29, 30, 29, 27, 23, 19,
+              14, 18, 20, 27, 29, 27, 20, 18, 14,
+              7, 0, 13, 0, 16, 0, 13, 0, 7,
+              7, 0, 7, 0, 15, 0, 7, 0, 7,
+              0, 0, 0, 0, 0, 0, 0, 0, 0,
+              0, 0, 0, 0, 0, 0, 0, 0, 0,
+              0, 0, 0, 0, 0, 0, 0, 0, 0};
+            static final int[][] PST = {null, null, null, null, PN, PR, PC, PP};
+
+            static final long[] ZB = new long[15 * 90];
+            static final long SIDE;
+            static {
+              long x = 0x9E3779B97F4A7C15L;
+              for (int i = 0; i < ZB.length; i++) { x ^= x << 13; x ^= x >>> 7; x ^= x << 17; ZB[i] = x * 0x2545F4914F6CDD1DL; }
+              x ^= x << 13; x ^= x >>> 7; x ^= x << 17; SIDE = x * 0x2545F4914F6CDD1DL;
+            }
+
             int[] b = new int[90];
+            int[] ksq = {-1, -1};
+            long h;
             long deadline;
             boolean stop;
-            int nodes, rootBest, pv;
+            int nodes, rootBest, rootLegal, rootPvLen;
+            final int[] rootPv = new int[MAXP];
 
-            // board: 90 o, mine > 0 (bottom, moves toward row 0), opponent < 0. 1=K 2=A 3=B 4=N 5=R 6=C 7=P
-            // returns {move, score, depth} or null. move = from << 8 | to
-            int[] best(int[] board, int ms) {
+            // bảng băm
+            final long[] tk = new long[TSZ];
+            final int[] tm = new int[TSZ];
+            final short[] ts = new short[TSZ];
+            final byte[] td = new byte[TSZ], tf = new byte[TSZ];
+
+            final int[][] MV = new int[MAXP][160], SC = new int[MAXP][160];
+            final int[][] pvm = new int[MAXP][MAXP];
+            final int[] pvl = new int[MAXP], K1 = new int[MAXP], K2 = new int[MAXP];
+            final long[] pk = new long[MAXP];
+            final int[] hist = new int[90 * 90];
+            final long[] seenK = new long[48];
+            int seenN = 0;
+
+            void init(int[] board) {
               b = board.clone();
+              h = 0; ksq[0] = -1; ksq[1] = -1;
+              for (int i = 0; i < 90; i++) {
+                int p = b[i];
+                if (p == 0) continue;
+                h ^= ZB[(p + 7) * 90 + i];
+                if (p == 1) ksq[0] = i; else if (p == -1) ksq[1] = i;
+              }
+            }
+
+            void addSeen(long k) {
+              int cnt = Math.min(seenN, 48);
+              for (int i = 0; i < cnt; i++) if (seenK[i] == k) return;
+              seenK[seenN % 48] = k;
+              seenN++;
+            }
+
+            // board: 90 o, quân mình > 0 (phía dưới, đi lên hàng 0), đối thủ < 0. 1=Tướng 2=Sĩ 3=Tượng 4=Mã 5=Xe 6=Pháo 7=Tốt
+            // trả về {nước đi, điểm, độ sâu} hoặc null. nước đi = from << 8 | to
+            int[] best(int[] board, int ms) {
+              init(board);
               long t0 = System.currentTimeMillis();
-              deadline = t0 + ms; stop = false; nodes = 0; pv = 0;
+              deadline = t0 + ms; stop = false; nodes = 0; rootPvLen = 0;
+              addSeen(h);
+              for (int i = 0; i < hist.length; i++) hist[i] >>= 1;
+              java.util.Arrays.fill(K1, 0); java.util.Arrays.fill(K2, 0);
               int bm = 0, bs = 0, dd = 0;
-              for (int d = 1; d <= 12; d++) {
-                rootBest = 0;
-                int s = search(1, d, -INF, INF, 0);
-                if (stop) break;
-                if (rootBest != 0) { bm = rootBest; bs = s; pv = bm; dd = d; }
-                if (rootBest == 0 || Math.abs(s) > MATE - 100) break;
-                if (System.currentTimeMillis() - t0 > ms * 0.45) break;
+              for (int d = 1; d <= 30; d++) {
+                rootBest = 0; rootLegal = 0;
+                int s = search(1, d, -INF, INF, 0, false);
+                if (stop || rootBest == 0) break;
+                bm = rootBest; bs = s; dd = d;
+                rootPvLen = Math.max(1, pvl[0]);
+                for (int i = 0; i < rootPvLen; i++) rootPv[i] = pvm[0][i];
+                rootPv[0] = bm;
+                if (rootLegal == 1) break;
+                if (Math.abs(s) > MATE - 200) break;
+                if (System.currentTimeMillis() - t0 > ms * 0.5) break;
               }
               return bm == 0 ? null : new int[]{bm, bs, dd};
             }
 
             boolean gives(int[] board, int m) {
-              b = board.clone();
+              init(board);
               make(m);
               return inCheck(-1);
             }
 
-            int make(int m) { int f = m >> 8, t = m & 255, c = b[t]; b[t] = b[f]; b[f] = 0; return c; }
-            void unmake(int m, int c) { int f = m >> 8, t = m & 255; b[f] = b[t]; b[t] = c; }
+            static int[] flip(int[] x) { int[] f = new int[90]; for (int i = 0; i < 90; i++) f[89 - i] = -x[i]; return f; }
+            static int fm(int m) { return ((89 - (m >> 8)) << 8) | (89 - (m & 255)); }
+
+            // Dòng biến chính dự kiến, ghi bằng ký hiệu tiếng Việt (mình đi trước)
+            String line(int[] B, int n) {
+              StringBuilder sb = new StringBuilder();
+              int[] bb = B.clone();
+              int s = 1;
+              for (int i = 0; i < n && i < rootPvLen; i++) {
+                int m = rootPv[i];
+                int[] vb = s > 0 ? bb : flip(bb);
+                int vm = s > 0 ? m : fm(m);
+                if (vb[vm >> 8] <= 0) break;
+                if (i > 0) sb.append(" → ");
+                sb.append(Notation.viet(vb, vm));
+                bb[m & 255] = bb[m >> 8]; bb[m >> 8] = 0;
+                s = -s;
+              }
+              return sb.toString();
+            }
+
+            String verdict(int sc) {
+              if (sc > MATE - 200) return "Chiếu hết sau " + ((MATE - sc + 1) / 2) + " nước!";
+              if (sc < -MATE + 200) return "Cẩn thận: sắp bị chiếu hết";
+              String w = sc > 250 ? "Ưu thế lớn" : sc > 80 ? "Hơn thế" : sc > -80 ? "Cân bằng" : sc > -250 ? "Hơi kém" : "Thế khó";
+              return w + " (" + String.format(java.util.Locale.US, "%+.1f", sc / 100f) + ")";
+            }
+
+            int make(int m) {
+              int f = m >> 8, t = m & 255, p = b[f], c = b[t];
+              h ^= ZB[(p + 7) * 90 + f] ^ ZB[(p + 7) * 90 + t];
+              if (c != 0) { h ^= ZB[(c + 7) * 90 + t]; if (c == 1) ksq[0] = -1; else if (c == -1) ksq[1] = -1; }
+              if (p == 1) ksq[0] = t; else if (p == -1) ksq[1] = t;
+              b[t] = p; b[f] = 0;
+              return c;
+            }
+
+            void unmake(int m, int c) {
+              int f = m >> 8, t = m & 255, p = b[t];
+              h ^= ZB[(p + 7) * 90 + f] ^ ZB[(p + 7) * 90 + t];
+              if (c != 0) h ^= ZB[(c + 7) * 90 + t];
+              b[f] = p; b[t] = c;
+              if (p == 1) ksq[0] = f; else if (p == -1) ksq[1] = f;
+              if (c == 1) ksq[0] = t; else if (c == -1) ksq[1] = t;
+            }
 
             boolean pal(int s, int r, int c) { return c >= 3 && c <= 5 && (s > 0 ? r >= 7 && r <= 9 : r >= 0 && r <= 2); }
 
@@ -199,8 +346,7 @@ jobs:
             }
 
             boolean inCheck(int s) {
-              int kp = -1;
-              for (int i = 0; i < 90; i++) if (b[i] == s) { kp = i; break; }
+              int kp = ksq[s > 0 ? 0 : 1];
               if (kp < 0) return true;
               int r = kp / 9, c = kp % 9, o = -s;
               for (int d = 0; d < 4; d++) {
@@ -233,37 +379,160 @@ jobs:
               return false;
             }
 
+            int heavy(int s) {
+              int n = 0;
+              for (int i = 0; i < 90; i++) {
+                int p = b[i];
+                if (p == 0 || (p > 0) != (s > 0)) continue;
+                int t = p > 0 ? p : -p;
+                if (t >= 4 && t <= 6) n++;
+              }
+              return n;
+            }
+
             int eval(int s) {
-              int tot = 0;
+              int tot = 0, am = 0, ao = 0, hm = 0, ho = 0;
               for (int i = 0; i < 90; i++) {
                 int p = b[i];
                 if (p == 0) continue;
                 int t = p > 0 ? p : -p;
                 if (t == 1) continue;
-                int r = i / 9, c = i % 9, adv = p > 0 ? 9 - r : r, v = V[t];
-                if (t == 7) { if (adv >= 5) v += 20 + (adv - 5) * 5; }
-                else if (t >= 4) v += 3 * (4 - Math.abs(c - 4));
+                int v = V[t];
+                if (t >= 4) v += PST[t][p > 0 ? i : (9 - i / 9) * 9 + i % 9];
+                if (t <= 3) { if (p > 0) am++; else ao++; }
+                else if (t <= 6) { if (p > 0) hm++; else ho++; }
                 tot += p > 0 ? v : -v;
               }
-              return s > 0 ? tot : -tot;
+              tot += (am * Math.min(ho, 3) - ao * Math.min(hm, 3)) * 4;
+              return (s > 0 ? tot : -tot) + 8;
             }
 
-            void score(int[] mv, int[] sc, int n, int ply) {
+            void score(int[] mv, int[] sc, int n, int ply, int ttm) {
               for (int i = 0; i < n; i++) {
-                int m = mv[i], c = b[m & 255], s = 0;
-                if (c != 0) s = V[Math.abs(c)] * 16 - V[Math.abs(b[m >> 8])];
-                if (ply == 0 && m == pv) s += 1000000;
+                int m = mv[i], c = b[m & 255], s;
+                if (m == ttm) s = 2000000;
+                else if (c != 0) s = 100000 + V[Math.abs(c)] * 16 - V[Math.abs(b[m >> 8])] / 4;
+                else if (m == K1[ply]) s = 95000;
+                else if (m == K2[ply]) s = 94000;
+                else s = hist[(m >> 8) * 90 + (m & 255)];
                 sc[i] = s;
               }
             }
 
-            int search(int s, int depth, int alpha, int beta, int ply) {
+            void store(long key, int depth, int sc, int flag, int move, int ply) {
+              int i = (int) (key >>> (64 - TTB));
+              if (sc > MATE - 200) sc += ply; else if (sc < -MATE + 200) sc -= ply;
+              tk[i] = key; tm[i] = move; ts[i] = (short) sc; td[i] = (byte) depth; tf[i] = (byte) flag;
+            }
+
+            int search(int s, int depth, int alpha, int beta, int ply, boolean nullOk) {
               if ((++nodes & 2047) == 0 && System.currentTimeMillis() > deadline) stop = true;
               if (stop) return 0;
-              if (depth <= 0) return qs(s, alpha, beta, 0);
-              int[] mv = new int[160], sc = new int[160];
+              pvl[ply] = ply;
+              if (ply >= MAXP - 2) return eval(s);
+              long key = h ^ (s < 0 ? SIDE : 0L);
+              pk[ply] = key;
+              if (ply > 0) {
+                for (int i = ply - 2; i >= 0; i -= 2) if (pk[i] == key) return 0;
+                if ((ply & 1) == 0 && ply <= 8) {
+                  int cnt = Math.min(seenN, 48);
+                  for (int i = 0; i < cnt; i++) if (seenK[i] == key) return 0;
+                }
+              }
+              if (alpha < -MATE + ply) alpha = -MATE + ply;
+              if (beta > MATE - ply - 1) beta = MATE - ply - 1;
+              if (alpha >= beta) return alpha;
+
+              boolean chk = inCheck(s);
+              if (chk && ply < 40) depth++;
+              if (depth <= 0) return qs(s, alpha, beta, 0, ply);
+
+              int idx = (int) (key >>> (64 - TTB)), ttm = 0;
+              if (tk[idx] == key) {
+                ttm = tm[idx];
+                if (ply > 0 && td[idx] >= depth) {
+                  int sc0 = ts[idx];
+                  if (sc0 > MATE - 200) sc0 -= ply; else if (sc0 < -MATE + 200) sc0 += ply;
+                  int f = tf[idx];
+                  if (f == 0) return sc0;
+                  if (f == 1 && sc0 >= beta) return sc0;
+                  if (f == 2 && sc0 <= alpha) return sc0;
+                }
+              }
+
+              // cắt tỉa nước "bỏ lượt"
+              if (nullOk && !chk && depth >= 3 && beta - alpha == 1 && beta < MATE - 200 && heavy(s) >= 2 && eval(s) >= beta) {
+                int v = -search(-s, depth - 3, -beta, -beta + 1, ply + 1, false);
+                if (stop) return 0;
+                if (v >= beta) return v >= MATE - 200 ? beta : v;
+              }
+
+              int[] mv = MV[ply], sc = SC[ply];
               int n = gen(s, mv, false);
-              score(mv, sc, n, ply);
+              score(mv, sc, n, ply, ttm);
+              int best = -INF, bestMove = 0, searched = 0, oa = alpha;
+              for (int i = 0; i < n; i++) {
+                int bi = i;
+                for (int j = i + 1; j < n; j++) if (sc[j] > sc[bi]) bi = j;
+                int m = mv[bi];
+                mv[bi] = mv[i]; sc[bi] = sc[i];
+                int cap = make(m);
+                if (inCheck(s)) { unmake(m, cap); continue; }
+                if (ply == 0) rootLegal++;
+                boolean quiet = cap == 0;
+                int nd = depth - 1, v;
+                if (searched == 0) {
+                  v = -search(-s, nd, -beta, -alpha, ply + 1, true);
+                } else {
+                  int red = 0;
+                  if (depth >= 3 && searched >= 4 && quiet && !chk && m != K1[ply] && m != K2[ply]) red = searched >= 10 ? 2 : 1;
+                  v = -search(-s, nd - red, -alpha - 1, -alpha, ply + 1, true);
+                  if (v > alpha && red > 0) v = -search(-s, nd, -alpha - 1, -alpha, ply + 1, true);
+                  if (v > alpha && v < beta) v = -search(-s, nd, -beta, -alpha, ply + 1, true);
+                }
+                unmake(m, cap);
+                if (stop) return 0;
+                searched++;
+                if (v > best) {
+                  best = v; bestMove = m;
+                  if (ply == 0) rootBest = m;
+                  if (v > alpha) {
+                    alpha = v;
+                    pvm[ply][ply] = m;
+                    int l = pvl[ply + 1];
+                    for (int j = ply + 1; j < l; j++) pvm[ply][j] = pvm[ply + 1][j];
+                    pvl[ply] = l > ply + 1 ? l : ply + 1;
+                  }
+                }
+                if (alpha >= beta) {
+                  if (quiet) {
+                    if (K1[ply] != m) { K2[ply] = K1[ply]; K1[ply] = m; }
+                    int hx = (m >> 8) * 90 + (m & 255);
+                    hist[hx] = Math.min(60000, hist[hx] + depth * depth);
+                  }
+                  break;
+                }
+              }
+              if (searched == 0) return -MATE + ply;
+              store(key, depth, best, best <= oa ? 2 : (best >= beta ? 1 : 0), bestMove, ply);
+              return best;
+            }
+
+            int qs(int s, int alpha, int beta, int qd, int ply) {
+              if ((++nodes & 2047) == 0 && System.currentTimeMillis() > deadline) stop = true;
+              if (stop) return 0;
+              pvl[ply] = ply;
+              if (ply >= MAXP - 2) return eval(s);
+              boolean chk = inCheck(s);
+              int st = 0;
+              if (!chk) {
+                st = eval(s);
+                if (st >= beta || qd >= 8) return st;
+                if (st > alpha) alpha = st;
+              } else if (qd >= 4) return eval(s);
+              int[] mv = MV[ply], sc = SC[ply];
+              int n = gen(s, mv, !chk);
+              score(mv, sc, n, ply, 0);
               int best = -INF;
               boolean any = false;
               for (int i = 0; i < n; i++) {
@@ -271,43 +540,19 @@ jobs:
                 for (int j = i + 1; j < n; j++) if (sc[j] > sc[bi]) bi = j;
                 int m = mv[bi];
                 mv[bi] = mv[i]; sc[bi] = sc[i];
+                int victim = b[m & 255];
+                if (!chk && victim != 0 && st + V[Math.abs(victim)] + 150 < alpha) continue;
                 int cap = make(m);
                 if (inCheck(s)) { unmake(m, cap); continue; }
                 any = true;
-                int ext = (ply < 8 && inCheck(-s)) ? 1 : 0;
-                int v = -search(-s, depth - 1 + ext, -beta, -alpha, ply + 1);
+                int v = -qs(-s, -beta, -alpha, qd + 1, ply + 1);
                 unmake(m, cap);
                 if (stop) return 0;
-                if (v > best) { best = v; if (ply == 0) rootBest = m; }
-                if (v > alpha) alpha = v;
-                if (alpha >= beta) break;
-              }
-              if (!any) return -MATE + ply;
-              return best;
-            }
-
-            int qs(int s, int alpha, int beta, int qd) {
-              if ((++nodes & 2047) == 0 && System.currentTimeMillis() > deadline) stop = true;
-              if (stop) return 0;
-              int st = eval(s);
-              if (qd >= 6 || st >= beta) return st;
-              if (st > alpha) alpha = st;
-              int[] mv = new int[160], sc = new int[160];
-              int n = gen(s, mv, true);
-              score(mv, sc, n, 1);
-              for (int i = 0; i < n; i++) {
-                int bi = i;
-                for (int j = i + 1; j < n; j++) if (sc[j] > sc[bi]) bi = j;
-                int m = mv[bi];
-                mv[bi] = mv[i]; sc[bi] = sc[i];
-                int cap = make(m);
-                if (inCheck(s)) { unmake(m, cap); continue; }
-                int v = -qs(-s, -beta, -alpha, qd + 1);
-                unmake(m, cap);
-                if (stop) return 0;
+                if (v > best) best = v;
                 if (v >= beta) return v;
                 if (v > alpha) alpha = v;
               }
+              if (chk) return any ? best : -MATE + ply;
               return alpha;
             }
           }
@@ -537,6 +782,173 @@ jobs:
             }
           }
           EOF
+          mkdir -p $(dirname app/src/main/java/com/cotuong/helper/Uci.java)
+          cat > app/src/main/java/com/cotuong/helper/Uci.java <<'EOF'
+          package com.cotuong.helper;
+
+          import java.io.BufferedReader;
+          import java.io.File;
+          import java.io.FileReader;
+          import java.io.InputStreamReader;
+          import java.io.OutputStream;
+          import java.util.Arrays;
+          import java.util.concurrent.LinkedBlockingQueue;
+          import java.util.concurrent.TimeUnit;
+
+          // Chạy Pikafish (UCI) như một tiến trình con. Tệp thực thi nằm trong thư mục thư viện native của app.
+          class Uci {
+            static class Res {
+              String best = "";
+              int cp, depth, mateIn;
+              boolean mate;
+              String[] pv = new String[0];
+            }
+
+            Process p;
+            OutputStream os;
+            final LinkedBlockingQueue<String> q = new LinkedBlockingQueue<String>();
+            volatile boolean ready;
+            String name = "";
+
+            static boolean hasDotprod() {
+              try (BufferedReader br = new BufferedReader(new FileReader("/proc/cpuinfo"))) {
+                String l;
+                while ((l = br.readLine()) != null) if (l.startsWith("Features") && l.contains("asimddp")) return true;
+              } catch (Exception e) { }
+              return false;
+            }
+
+            boolean start(String nativeDir) {
+              String[] cand = hasDotprod() ? new String[]{"libpikafish_dp.so", "libpikafish.so"} : new String[]{"libpikafish.so"};
+              for (String f : cand) {
+                File ex = new File(nativeDir, f);
+                if (!ex.exists()) continue;
+                try { if (boot(ex)) { name = f; return true; } } catch (Throwable t) { }
+                stop();
+              }
+              return false;
+            }
+
+            boolean boot(File ex) throws Exception {
+              ProcessBuilder pb = new ProcessBuilder(ex.getAbsolutePath());
+              pb.redirectErrorStream(true);
+              final Process pr = pb.start();
+              p = pr;
+              os = pr.getOutputStream();
+              q.clear();
+              Thread rd = new Thread(new Runnable() {
+                @Override public void run() {
+                  try (BufferedReader br = new BufferedReader(new InputStreamReader(pr.getInputStream()))) {
+                    String l;
+                    while ((l = br.readLine()) != null) q.offer(l);
+                  } catch (Exception e) { }
+                  q.offer("#eof");
+                }
+              });
+              rd.setDaemon(true);
+              rd.start();
+              send("uci");
+              if (!waitFor("uciok", 20000)) return false;
+              int th = Math.min(8, Math.max(1, Runtime.getRuntime().availableProcessors()));
+              send("setoption name Threads value " + th);
+              send("setoption name Hash value 128");
+              send("isready");
+              if (!waitFor("readyok", 40000)) return false;
+              ready = true;
+              return true;
+            }
+
+            void send(String s) throws Exception {
+              os.write((s + "\n").getBytes("UTF-8"));
+              os.flush();
+            }
+
+            boolean waitFor(String tok, long ms) throws Exception {
+              long end = System.currentTimeMillis() + ms;
+              while (System.currentTimeMillis() < end) {
+                String l = q.poll(200, TimeUnit.MILLISECONDS);
+                if (l == null) continue;
+                if (l.equals("#eof")) return false;
+                if (l.startsWith(tok)) return true;
+              }
+              return false;
+            }
+
+            Res go(String fen, int ms) {
+              Res r = new Res();
+              try {
+                q.clear();
+                send("position fen " + fen);
+                send("go movetime " + ms);
+                long end = System.currentTimeMillis() + ms + 10000, hard = end + 4000;
+                boolean stopped = false;
+                while (true) {
+                  long now = System.currentTimeMillis();
+                  if (now > hard) break;
+                  if (now > end && !stopped) { send("stop"); stopped = true; }
+                  String l = q.poll(200, TimeUnit.MILLISECONDS);
+                  if (l == null) continue;
+                  if (l.equals("#eof")) { ready = false; break; }
+                  if (l.startsWith("bestmove")) {
+                    String[] t = l.split(" ");
+                    if (t.length > 1) r.best = t[1];
+                    break;
+                  }
+                  if (l.startsWith("info") && l.contains(" pv ") && !l.contains("bound")) info(l, r);
+                }
+              } catch (Throwable t) { ready = false; }
+              return r;
+            }
+
+            void info(String l, Res r) {
+              try {
+                String[] t = l.split(" ");
+                for (int i = 0; i + 1 < t.length; i++) if (t[i].equals("multipv") && !t[i + 1].equals("1")) return;
+                for (int i = 0; i < t.length; i++) {
+                  String k = t[i];
+                  if (k.equals("depth") && i + 1 < t.length) r.depth = Integer.parseInt(t[i + 1]);
+                  else if (k.equals("score") && i + 2 < t.length) {
+                    r.mate = t[i + 1].equals("mate");
+                    if (r.mate) r.mateIn = Integer.parseInt(t[i + 2]); else r.cp = Integer.parseInt(t[i + 2]);
+                  } else if (k.equals("pv")) { r.pv = Arrays.copyOfRange(t, i + 1, t.length); break; }
+                }
+              } catch (Exception e) { }
+            }
+
+            void stop() {
+              ready = false;
+              try { if (os != null) { os.write("quit\n".getBytes("UTF-8")); os.flush(); } } catch (Exception e) { }
+              try { if (p != null) p.destroy(); } catch (Exception e) { }
+              p = null; os = null;
+            }
+
+            // Bàn cờ 90 ô (mình > 0, ở dưới) -> FEN cờ tướng; mình = quân hoa (chữ in), đi trước
+            static String fen(int[] B) {
+              String L = " kabnrcp";
+              StringBuilder sb = new StringBuilder();
+              for (int r = 0; r < 10; r++) {
+                int e = 0;
+                for (int c = 0; c < 9; c++) {
+                  int v = B[r * 9 + c];
+                  if (v == 0) { e++; continue; }
+                  if (e > 0) { sb.append(e); e = 0; }
+                  char ch = L.charAt(Math.abs(v));
+                  sb.append(v > 0 ? Character.toUpperCase(ch) : ch);
+                }
+                if (e > 0) sb.append(e);
+                if (r < 9) sb.append('/');
+              }
+              return sb.append(" w - - 0 1").toString();
+            }
+
+            // "h2e2" -> from << 8 | to (hàng 0 = phía trên)
+            static int parse(String m) {
+              int f = (9 - (m.charAt(1) - '0')) * 9 + (m.charAt(0) - 'a');
+              int t = (9 - (m.charAt(3) - '0')) * 9 + (m.charAt(2) - 'a');
+              return (f << 8) | t;
+            }
+          }
+          EOF
           mkdir -p $(dirname app/src/main/java/com/cotuong/helper/MainActivity.java)
           cat > app/src/main/java/com/cotuong/helper/MainActivity.java <<'EOF'
           package com.cotuong.helper;
@@ -677,6 +1089,8 @@ jobs:
             volatile Bitmap last;
             Recog recog;
             final Engine eng = new Engine();
+            Uci uci;
+            static final int THINK_MS = 8000;
             final float[] g = new float[4];   // x0, y0, bước ngang, bước dọc
             SharedPreferences sp;
             String prevOcc = "", doneOcc = "";
@@ -721,6 +1135,12 @@ jobs:
               g[2] = sx;
               g[3] = sp.getFloat("sy", sx * 1.007f);
               running = true;
+              uci = new Uci();
+              bg.post(new Runnable() {
+                @Override public void run() {
+                  try { uci.start(getApplicationInfo().nativeLibraryDir); } catch (Throwable t) { }
+                }
+              });
               makeBubble();
               showCalib();
               return START_NOT_STICKY;
@@ -950,10 +1370,30 @@ jobs:
               lastB = B;
               if (!mine) { say("Đối thủ đang đi…", null); return; }
               say("Đang tính nước đi…", null);
-              int[] r = eng.best(B, 2500);
+              int[] r;
+              String tag = "Engine dự phòng";
+              Uci.Res pr = (uci != null && uci.ready) ? uci.go(Uci.fen(B), THINK_MS) : null;
+              if (pr != null && pr.best.startsWith("(")) { say("Hết nước đi", "Ván cờ đã kết thúc?"); return; }
+              if (pr != null && pr.best.length() >= 4) {
+                int m0 = Uci.parse(pr.best);
+                int sc0 = pr.cp;
+                if (pr.mate) sc0 = pr.mateIn > 0 ? Engine.MATE - (2 * pr.mateIn - 1) : -Engine.MATE - 2 * pr.mateIn;
+                eng.rootPvLen = 1;
+                eng.rootPv[0] = m0;
+                if (pr.pv.length > 0 && pr.pv[0].equals(pr.best)) {
+                  for (int k = 1; k < pr.pv.length && k < 8; k++) {
+                    if (pr.pv[k].length() < 4) break;
+                    eng.rootPv[eng.rootPvLen++] = Uci.parse(pr.pv[k]);
+                  }
+                }
+                r = new int[]{m0, sc0, pr.depth};
+                tag = "Pikafish";
+              } else {
+                r = eng.best(B, 6000);
+              }
               if (r == null) { say("Hết nước đi", "Ván cờ đã kết thúc?"); return; }
               String chk = eng.gives(B, r[0]) ? " · CHIẾU!" : "";
-              say("▶ " + Notation.viet(B, r[0]), Notation.sq(B, r[0]) + chk + "\n(độ sâu " + r[2] + ")");
+              say("▶ " + Notation.viet(B, r[0]), Notation.sq(B, r[0]) + chk + "\n" + eng.verdict(r[1]) + " · sâu " + r[2] + " · " + tag + "\nDự kiến: " + eng.line(B, 5));
             }
 
             @Override public void onDestroy() {
@@ -963,11 +1403,37 @@ jobs:
               try { if (vd != null) vd.release(); } catch (Exception e) { }
               try { if (reader != null) reader.close(); } catch (Exception e) { }
               try { if (proj != null) proj.stop(); } catch (Exception e) { }
+              try { if (uci != null) uci.stop(); } catch (Exception e) { }
               if (ht != null) ht.quitSafely();
               super.onDestroy();
             }
           }
           EOF
+
+      - name: Build Pikafish (engine manh nhat)
+        continue-on-error: true
+        run: |
+          set -e
+          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-$ANDROID_NDK_ROOT}}"
+          echo "NDK=$NDK"
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="$TC:$PATH"
+          which aarch64-linux-android21-clang++
+          git clone --depth 1 https://github.com/official-pikafish/Pikafish.git /tmp/pikafish
+          OUTD="$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$OUTD"
+          cd /tmp/pikafish/src
+          make -j"$(nproc)" build ARCH=armv8 COMP=ndk EXTRALDFLAGS="-Wl,-z,max-page-size=16384"
+          "$TC/llvm-strip" pikafish
+          cp pikafish "$OUTD/libpikafish.so"
+          make clean || true
+          if make -j"$(nproc)" build ARCH=armv8-dotprod COMP=ndk EXTRALDFLAGS="-Wl,-z,max-page-size=16384"; then
+            "$TC/llvm-strip" pikafish
+            cp pikafish "$OUTD/libpikafish_dp.so"
+          else
+            echo "Khong build duoc ban dotprod, chi dung ban armv8"
+          fi
+          ls -l "$OUTD"
 
       - name: Build APK
         run: |

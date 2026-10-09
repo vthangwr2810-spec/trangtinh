@@ -186,7 +186,15 @@ jobs:
               }
             }
 
-            void addSeen(long k) {
+            void reset() {
+            java.util.Arrays.fill(tk, 0L);
+            java.util.Arrays.fill(hist, 0);
+            java.util.Arrays.fill(K1, 0);
+            java.util.Arrays.fill(K2, 0);
+            seenN = 0;
+          }
+
+          void addSeen(long k) {
               int cnt = Math.min(seenN, 48);
               for (int i = 0; i < cnt; i++) if (seenK[i] == k) return;
               seenK[seenN % 48] = k;
@@ -809,6 +817,7 @@ jobs:
             final LinkedBlockingQueue<String> q = new LinkedBlockingQueue<String>();
             volatile boolean ready;
             String name = "";
+            volatile String err = "";
 
             static boolean hasDotprod() {
               try (BufferedReader br = new BufferedReader(new FileReader("/proc/cpuinfo"))) {
@@ -820,10 +829,14 @@ jobs:
 
             boolean start(String nativeDir) {
               String[] cand = hasDotprod() ? new String[]{"libpikafish_dp.so", "libpikafish.so"} : new String[]{"libpikafish.so"};
+              err = "";
               for (String f : cand) {
                 File ex = new File(nativeDir, f);
-                if (!ex.exists()) continue;
-                try { if (boot(ex)) { name = f; return true; } } catch (Throwable t) { }
+                if (!ex.exists()) { err = "thiếu " + f; continue; }
+                try {
+                  if (boot(ex)) { name = f; return true; }
+                  err = "không phản hồi (" + f + ")";
+                } catch (Throwable t) { err = f + ": " + t.getMessage(); }
                 stop();
               }
               return false;
@@ -915,6 +928,16 @@ jobs:
               } catch (Exception e) { }
             }
 
+            void abort() {
+              try { if (ready && os != null) send("stop"); } catch (Throwable t) { }
+            }
+
+            void newGame() throws Exception {
+              send("ucinewgame");
+              send("isready");
+              waitFor("readyok", 10000);
+            }
+
             void stop() {
               ready = false;
               try { if (os != null) { os.write("quit\n".getBytes("UTF-8")); os.flush(); } } catch (Exception e) { }
@@ -982,6 +1005,7 @@ jobs:
                   + "3. Quay lại game: lưới xanh hiện lên. Kéo lưới cho các vòng vàng khớp quân cờ (W/H chỉnh độ rộng/cao ô), bấm LƯU.\n"
                   + "4. Tới lượt bạn, bong bóng sẽ ghi nước đi, ví dụ \"Pháo 8 bình 5\".\n\n"
                   + "Chạm bong bóng: tính lại. Giữ bong bóng: căn lại lưới. Kéo bong bóng: đổi chỗ (đừng để che bàn cờ).\n"
+                  + "Nút đỏ \"↻ Ván mới\": bấm khi bắt đầu ván mới để app xoá trí nhớ và tính lại từ đầu (kéo để đổi chỗ).\n"
                   + "Bàn cờ phải nằm trọn trên màn hình, quân của bạn ở phía dưới.\n");
               l.addView(t);
               l.addView(btn("1. Cấp quyền hiển thị trên ứng dụng khác", new View.OnClickListener() {
@@ -1091,6 +1115,10 @@ jobs:
             final Engine eng = new Engine();
             Uci uci;
             static final int THINK_MS = 8000;
+            volatile String engNote = "Đang nạp Pikafish…";
+            volatile boolean myTurn = true;
+            TextView rbtn;
+            WindowManager.LayoutParams rlp;
             final float[] g = new float[4];   // x0, y0, bước ngang, bước dọc
             SharedPreferences sp;
             String prevOcc = "", doneOcc = "";
@@ -1139,9 +1167,12 @@ jobs:
               bg.post(new Runnable() {
                 @Override public void run() {
                   try { uci.start(getApplicationInfo().nativeLibraryDir); } catch (Throwable t) { }
+                  engNote = uci.ready ? "Pikafish ✓ sẵn sàng" : "Pikafish ✗ " + uci.err + " → dùng engine dự phòng";
+                  if (calibrating) say("Căn lưới bàn cờ rồi bấm LƯU", engNote);
                 }
               });
               makeBubble();
+              makeResetBtn();
               showCalib();
               return START_NOT_STICKY;
             }
@@ -1202,6 +1233,96 @@ jobs:
               wm.addView(bubble, blp);
             }
 
+            void makeResetBtn() {
+              rbtn = new TextView(this);
+              rbtn.setText("↻ Ván mới");
+              rbtn.setTextColor(Color.WHITE);
+              rbtn.setTextSize(13);
+              rbtn.setPadding(28, 16, 28, 16);
+              GradientDrawable gd = new GradientDrawable();
+              gd.setColor(0xEEB71C1C);
+              gd.setCornerRadius(48);
+              gd.setStroke(3, 0xFFFFC107);
+              rbtn.setBackground(gd);
+              rlp = new WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                  WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                  WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                  PixelFormat.TRANSLUCENT);
+              rlp.gravity = Gravity.TOP | Gravity.START;
+              rlp.x = Math.max(0, W - 380);
+              rlp.y = (int) (0.05f * H);
+              rbtn.setOnTouchListener(new View.OnTouchListener() {
+                float sx0, sy0, ox, oy;
+                boolean moved;
+                @Override public boolean onTouch(View v, MotionEvent e) {
+                  switch (e.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                      sx0 = e.getRawX(); sy0 = e.getRawY(); ox = rlp.x; oy = rlp.y; moved = false;
+                      return true;
+                    case MotionEvent.ACTION_MOVE:
+                      float mx = e.getRawX() - sx0, my = e.getRawY() - sy0;
+                      if (Math.abs(mx) + Math.abs(my) > 24) moved = true;
+                      if (moved) { rlp.x = (int) (ox + mx); rlp.y = (int) (oy + my); wm.updateViewLayout(rbtn, rlp); }
+                      return true;
+                    case MotionEvent.ACTION_UP:
+                      if (!moved) newGame();
+                      return true;
+                  }
+                  return false;
+                }
+              });
+              wm.addView(rbtn, rlp);
+            }
+
+            // Ván mới: xoá toàn bộ trí nhớ, báo Pikafish bắt đầu ván mới và đọc/tính lại từ đầu
+            void newGame() {
+              if (!running) return;
+              if (uci != null) uci.abort();
+              say("Ván mới…", "Đang đặt lại");
+              bg.post(new Runnable() {
+                @Override public void run() {
+                  prevOcc = ""; doneOcc = ""; lastB = null; myTurn = true;
+                  if (recog != null) recog.reset();
+                  eng.reset();
+                  try { if (uci != null && uci.ready) uci.newGame(); } catch (Throwable t) { }
+                  force = true;
+                  say("Ván mới — đang đọc bàn cờ…", null);
+                }
+              });
+            }
+
+            static boolean isStart(int[] B) {
+              int[] back = {5, 4, 3, 2, 1, 2, 3, 4, 5};
+              int[] S = new int[90];
+              for (int c = 0; c < 9; c++) { S[c] = -back[c]; S[81 + c] = back[c]; }
+              S[19] = -6; S[25] = -6; S[64] = 6; S[70] = 6;
+              for (int c = 0; c < 9; c += 2) { S[27 + c] = -7; S[54 + c] = 7; }
+              return java.util.Arrays.equals(S, B);
+            }
+
+            // Kiểm tra bàn cờ đọc được có hợp lý không (chống đọc sai quân dẫn tới nước đi khờ)
+            String bad(int[] B, boolean mineTurn) {
+              int[][] cnt = new int[2][8];
+              for (int i = 0; i < 90; i++) {
+                int p = B[i];
+                if (p == 0) continue;
+                int t = Math.abs(p), s = p > 0 ? 0 : 1, c = i % 9, rr = p > 0 ? i / 9 : 9 - i / 9;
+                cnt[s][t]++;
+                if (t == 1 && !(rr >= 7 && c >= 3 && c <= 5)) return "Tướng nằm ngoài cung";
+                if (t == 2 && !(((rr == 9 || rr == 7) && (c == 3 || c == 5)) || (rr == 8 && c == 4))) return "Có Sĩ nằm sai chỗ";
+                if (t == 3 && !(((rr == 9 || rr == 5) && (c == 2 || c == 6)) || (rr == 7 && (c == 0 || c == 4 || c == 8)))) return "Có Tượng nằm sai chỗ";
+                if (t == 7 && (rr > 6 || (rr > 4 && c % 2 == 1))) return "Có Tốt nằm sai chỗ";
+              }
+              for (int s = 0; s < 2; s++) {
+                int[] k = cnt[s];
+                if (k[2] > 2 || k[3] > 2 || k[4] > 2 || k[5] > 2 || k[6] > 2 || k[7] > 5) return "Thừa quân (đọc nhầm loại quân)";
+              }
+              if (mineTurn) {
+                eng.init(B);
+                if (eng.inCheck(-1)) return "Đối thủ đang bị chiếu: đọc sai quân, hoặc chưa tới lượt bạn";
+              }
+              return null;
+            }
             void say(final String big, final String small) {
               ui.post(new Runnable() {
                 @Override public void run() {
@@ -1302,7 +1423,7 @@ jobs:
               doneOcc = "";
               lastB = null;
               calibrating = false;
-              say("Đang chờ…", "Chạm: tính lại · Giữ: căn lại lưới");
+              say("Đang chờ…", "Chạm: tính lại · Giữ: căn lại lưới\n" + engNote);
               bg.removeCallbacks(loop);
               bg.postDelayed(loop, 1200);
             }
@@ -1361,14 +1482,22 @@ jobs:
                 say("Thiếu Tướng/Soái", "Kiểm tra căn lưới (giữ bong bóng) hoặc chạm để đọc lại");
                 return;
               }
-              boolean mine = true;
-              if (!f && lastB != null) {
+              boolean nt = myTurn;
+              if (f || lastB == null) nt = !(isStart(B) && recog.mineOcc == 2);   // mình cầm đen thì đỏ đi trước
+              else {
                 int vac = 0, mover = 0;
                 for (int i = 0; i < 90; i++) if (B[i] == 0 && lastB[i] != 0) { vac++; mover = lastB[i]; }
-                if (vac == 1) mine = mover < 0;   // quân đối thủ vừa đi -> tới lượt mình
+                if (vac == 1) nt = mover < 0;   // quân đối thủ vừa đi -> tới lượt mình
               }
+              String why = bad(B, nt);
+              if (why != null) {
+                recog.reset();
+                say("Bàn cờ đọc có vẻ sai", why + "\nChạm bong bóng để đọc lại · Giữ: căn lại lưới");
+                return;
+              }
+              myTurn = nt;
               lastB = B;
-              if (!mine) { say("Đối thủ đang đi…", null); return; }
+              if (!myTurn) { say("Đối thủ đang đi…", null); return; }
               say("Đang tính nước đi…", null);
               int[] r;
               String tag = "Engine dự phòng";
@@ -1400,6 +1529,7 @@ jobs:
               running = false;
               try { if (bubble != null) wm.removeView(bubble); } catch (Exception e) { }
               try { if (calib != null) wm.removeView(calib); } catch (Exception e) { }
+              try { if (rbtn != null) wm.removeView(rbtn); } catch (Exception e) { }
               try { if (vd != null) vd.release(); } catch (Exception e) { }
               try { if (reader != null) reader.close(); } catch (Exception e) { }
               try { if (proj != null) proj.stop(); } catch (Exception e) { }

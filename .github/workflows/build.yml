@@ -646,7 +646,18 @@ jobs:
             }
 
             // So với mọi mẫu cùng màu; trả về điểm giống nhất và ghi loại quân (1..7) vào lastType
-            static float match(float[] f, boolean isRed) {
+            // Loại quân nào được phép đứng ở ô (rr = hàng tính từ phía mình của quân đó, 9 = hàng cuối nhà; c = cột)
+            static boolean allowed(int t, int rr, int c) {
+              switch (t) {
+                case 1: return rr >= 7 && c >= 3 && c <= 5;
+                case 2: return ((rr == 9 || rr == 7) && (c == 3 || c == 5)) || (rr == 8 && c == 4);
+                case 3: return ((rr == 9 || rr == 5) && (c == 2 || c == 6)) || (rr == 7 && (c == 0 || c == 4 || c == 8));
+                case 7: return !(rr > 6 || (rr > 4 && c % 2 == 1));
+                default: return true;
+              }
+            }
+
+            static float match(float[] f, boolean isRed, int rr, int c) {
               if (redF == null) { redF = parse(REDD); blkF = parse(BLKD); }
               float[][] T = isRed ? redF : blkF;
               int[] ty = isRed ? REDT : BLKT;
@@ -654,6 +665,7 @@ jobs:
               for (float v : f) nf += v * v;
               if (nf < 1e-6f) return -1;
               for (int k = 0; k < T.length; k++) {
+                if (!allowed(ty[k], rr, c)) continue;
                 float d = 0, nt = 0;
                 for (int i = 0; i < N * N; i++) { d += f[i] * T[k][i]; nt += T[k][i] * T[k][i]; }
                 float s = d / (float) Math.sqrt(nf * nt + 1e-9);
@@ -757,7 +769,7 @@ jobs:
                   same = d < SG * 10;
                 }
                 if (!same) {
-                  type[i] = ocr(bm, cx, cy, g[2], occ[i] == 1);
+                  type[i] = ocr(bm, cx, cy, g[2], occ[i] == 1, occ[i] == mineOcc ? i / 9 : 9 - i / 9, i % 9);
                   System.arraycopy(s, 0, sig, i * SG, SG);
                   cachedOcc[i] = occ[i];
                   ok[i] = type[i] != 0;
@@ -774,7 +786,7 @@ jobs:
             }
 
             // Thử lệch vài pixel quanh tâm (chịu sai số căn lưới), lấy mẫu giống nhất
-            int ocr(Bitmap bm, float cx, float cy, float st, boolean isRed) {
+            int ocr(Bitmap bm, float cx, float cy, float st, boolean isRed, int rr, int c) {
               int R = Math.round(0.33f * st), n = 2 * R + 1;
               int[] px = new int[n * n];
               float best = -1;
@@ -783,7 +795,7 @@ jobs:
                 int x = Math.round(cx) + dx - R, y = Math.round(cy) + dy - R;
                 if (x < 0 || y < 0 || x + n > bm.getWidth() || y + n > bm.getHeight()) continue;
                 bm.getPixels(px, 0, n, x, y, n, n);
-                float s = Glyph.match(Glyph.feature(px, n), isRed);
+                float s = Glyph.match(Glyph.feature(px, n), isRed, rr, c);
                 if (s > best) { best = s; bt = Glyph.lastType; }
               }
               return best >= 0.7f ? bt : 0;
@@ -977,6 +989,80 @@ jobs:
             }
           }
           EOF
+          mkdir -p $(dirname app/src/main/java/com/cotuong/helper/Track.java)
+          cat > app/src/main/java/com/cotuong/helper/Track.java <<'EOF'
+          package com.cotuong.helper;
+
+          // Theo dõi ván cờ chỉ bằng "ô nào có quân màu gì" (rất ổn định), không đọc lại chữ trên quân mỗi lần quét.
+          // Bàn cờ: 90 ô, quân mình (nửa dưới) > 0, đối thủ < 0. occ: 0 trống, 1 đỏ, 2 đen. mineC = màu của mình trong occ.
+          class Track {
+            static int[] startBoard() {
+              int[] back = {5, 4, 3, 2, 1, 2, 3, 4, 5};
+              int[] S = new int[90];
+              for (int c = 0; c < 9; c++) { S[c] = -back[c]; S[81 + c] = back[c]; }
+              S[19] = -6; S[25] = -6; S[64] = 6; S[70] = 6;
+              for (int c = 0; c < 9; c += 2) { S[27 + c] = -7; S[54 + c] = 7; }
+              return S;
+            }
+
+            static boolean occEq(int[] b, int[] occ, int mineC) {
+              for (int i = 0; i < 90; i++) {
+                int p = b[i];
+                int e = p == 0 ? 0 : (p > 0 ? mineC : 3 - mineC);
+                if (occ[i] != e) return false;
+              }
+              return true;
+            }
+
+            // Số ô khác nhau giữa bàn đang theo dõi và màn hình (để báo lỗi dễ hiểu)
+            static int diff(int[] b, int[] occ, int mineC) {
+              int n = 0;
+              for (int i = 0; i < 90; i++) {
+                int p = b[i];
+                int e = p == 0 ? 0 : (p > 0 ? mineC : 3 - mineC);
+                if (occ[i] != e) n++;
+              }
+              return n;
+            }
+
+            // Màn hình đang ở thế xuất phát (32 quân đúng chỗ) -> không cần đọc chữ trên quân
+            static boolean isStartOcc(int[] occ, int mineC) {
+              return occEq(startBoard(), occ, mineC);
+            }
+
+            static void apply(int[] b, int m) {
+              b[m & 255] = b[m >> 8];
+              b[m >> 8] = 0;
+            }
+
+            // Tìm 1 hoặc 2 nước đi hợp lệ (bên đang tới lượt đi trước) đưa bàn B tới đúng thế occ trên màn hình.
+            // Trả về mảng rỗng nếu chưa có gì thay đổi, null nếu không có nước nào khớp.
+            static int[] explain(Engine e, int[] B, boolean mineTurn, int[] occ, int mineC) {
+              if (occEq(B, occ, mineC)) return new int[0];
+              e.init(B);
+              int s = mineTurn ? 1 : -1;
+              int[] m1 = new int[160];
+              int n1 = e.gen(s, m1, false);
+              int[] m2 = new int[160];
+              for (int i = 0; i < n1; i++) {
+                int a = m1[i];
+                int ca = e.make(a);
+                if (e.inCheck(s)) { e.unmake(a, ca); continue; }
+                if (occEq(e.b, occ, mineC)) { e.unmake(a, ca); return new int[]{a}; }
+                int n2 = e.gen(-s, m2, false);
+                for (int j = 0; j < n2; j++) {
+                  int c = m2[j];
+                  int cc = e.make(c);
+                  boolean ok = !e.inCheck(-s) && occEq(e.b, occ, mineC);
+                  e.unmake(c, cc);
+                  if (ok) { e.unmake(a, ca); return new int[]{a, c}; }
+                }
+                e.unmake(a, ca);
+              }
+              return null;
+            }
+          }
+          EOF
           mkdir -p $(dirname app/src/main/java/com/cotuong/helper/MainActivity.java)
           cat > app/src/main/java/com/cotuong/helper/MainActivity.java <<'EOF'
           package com.cotuong.helper;
@@ -1008,9 +1094,10 @@ jobs:
                   + "1. Bấm nút 1 để cấp quyền hiển thị bong bóng.\n"
                   + "2. Mở game, vào ván cờ. Quay lại đây bấm nút 2, chọn cho phép ghi toàn màn hình (Bắt đầu ngay).\n"
                   + "3. Quay lại game: lưới xanh hiện lên. Kéo lưới cho các vòng vàng khớp quân cờ (W/H chỉnh độ rộng/cao ô), bấm LƯU.\n"
-                  + "4. Tới lượt bạn, bong bóng sẽ ghi nước đi, ví dụ \"Pháo 8 bình 5\".\n\n"
-                  + "Chạm bong bóng: tính lại. Giữ bong bóng: căn lại lưới. Kéo bong bóng: đổi chỗ (đừng để che bàn cờ).\n"
-                  + "Nút đỏ \"↻ Ván mới\": bấm khi bắt đầu ván mới để app xoá trí nhớ và tính lại từ đầu (kéo để đổi chỗ).\n"
+                  + "4. Bấm nút đỏ \"↻ Ván mới\" lúc bàn cờ đang ở thế xuất phát. Tới lượt bạn, bong bóng ghi nước đi, ví dụ \"Pháo 8 bình 5\".\n"
+                  + "5. Bạn đi xong thì bấm nút xanh \"⏱ Đối thủ đi\". App tự đợi tới khi đối thủ đi xong (bàn cờ đổi và đứng yên) rồi mới tính nước tiếp theo, không bị lộn nước.\n\n"
+                  + "App chỉ đọc chữ trên quân một lần lúc bắt đầu; sau đó theo dõi từng nước đi nên không còn lỗi đọc nhầm quân giữa ván. Bạn đi khác gợi ý cũng được.\n\n"
+                  + "Chạm bong bóng: đọc lại cả bàn cờ (dùng khi vào giữa ván hoặc bị lệch). Giữ bong bóng: căn lại lưới. Kéo bong bóng/nút: đổi chỗ (đừng để che bàn cờ).\n"
                   + "Bàn cờ phải nằm trọn trên màn hình, quân của bạn ở phía dưới.\n");
               l.addView(t);
               l.addView(btn("1. Cấp quyền hiển thị trên ứng dụng khác", new View.OnClickListener() {
@@ -1121,13 +1208,16 @@ jobs:
             Uci uci;
             static final int THINK_MS = 8000;
             volatile String engNote = "Đang nạp Pikafish…";
-            volatile boolean myTurn = true;
-            TextView rbtn;
-            WindowManager.LayoutParams rlp;
+            TextView rbtn, ebtn;
+            int[] cur;                       // bàn cờ đang theo dõi (quân mình > 0, ở dưới)
+            boolean turnMine = true;         // đang tới lượt mình?
+            int mineC = 1;                   // màu của mình trên màn hình: 1 đỏ, 2 đen
+            volatile boolean waiting, cancel;  // waiting: đang chờ đối thủ đi
+            int stableN = 0, miss = 0;
+            String lastNote = "";
             final float[] g = new float[4];   // x0, y0, bước ngang, bước dọc
             SharedPreferences sp;
-            String prevOcc = "", doneOcc = "";
-            int[] lastB;
+            String prevOcc = "";
             volatile boolean calibrating, running, force;
             int engTry = 0;
 
@@ -1176,7 +1266,12 @@ jobs:
                 }
               });
               makeBubble();
-              makeResetBtn();
+              rbtn = makeFloat("↻ Ván mới", 0xEEB71C1C, Math.max(0, W - 380), (int) (0.05f * H), new Runnable() {
+                @Override public void run() { newGame(); }
+              });
+              ebtn = makeFloat("⏱ Đối thủ đi", 0xEE1565C0, Math.max(0, W - 380), (int) (0.05f * H) + 120, new Runnable() {
+                @Override public void run() { toggleWait(); }
+              });
               showCalib();
               return START_NOT_STICKY;
             }
@@ -1266,7 +1361,7 @@ jobs:
                     case MotionEvent.ACTION_UP:
                       if (!moved) {
                         if (System.currentTimeMillis() - t0 > 600) showCalib();
-                        else { force = true; say("Đang đọc lại bàn cờ…", null); }
+                        else { cancel = true; if (uci != null) uci.abort(); force = true; say("Đang đọc lại bàn cờ…", null); }
                       }
                       return true;
                   }
@@ -1276,55 +1371,91 @@ jobs:
               wm.addView(bubble, blp);
             }
 
-            void makeResetBtn() {
-              rbtn = new TextView(this);
-              rbtn.setText("↻ Ván mới");
-              rbtn.setTextColor(Color.WHITE);
-              rbtn.setTextSize(13);
-              rbtn.setPadding(28, 16, 28, 16);
+            // Nút nổi kéo được; chạm = chạy onTap
+            TextView makeFloat(String label, int color, int x, int y, final Runnable onTap) {
+              final TextView tv = new TextView(this);
+              tv.setText(label);
+              tv.setTextColor(Color.WHITE);
+              tv.setTextSize(13);
+              tv.setPadding(28, 16, 28, 16);
               GradientDrawable gd = new GradientDrawable();
-              gd.setColor(0xEEB71C1C);
+              gd.setColor(color);
               gd.setCornerRadius(48);
               gd.setStroke(3, 0xFFFFC107);
-              rbtn.setBackground(gd);
-              rlp = new WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+              tv.setBackground(gd);
+              final WindowManager.LayoutParams lp = new WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
                   WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                   WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                   PixelFormat.TRANSLUCENT);
-              rlp.gravity = Gravity.TOP | Gravity.START;
-              rlp.x = Math.max(0, W - 380);
-              rlp.y = (int) (0.05f * H);
-              rbtn.setOnTouchListener(new View.OnTouchListener() {
+              lp.gravity = Gravity.TOP | Gravity.START;
+              lp.x = x;
+              lp.y = y;
+              tv.setOnTouchListener(new View.OnTouchListener() {
                 float sx0, sy0, ox, oy;
                 boolean moved;
                 @Override public boolean onTouch(View v, MotionEvent e) {
                   switch (e.getAction()) {
                     case MotionEvent.ACTION_DOWN:
-                      sx0 = e.getRawX(); sy0 = e.getRawY(); ox = rlp.x; oy = rlp.y; moved = false;
+                      sx0 = e.getRawX(); sy0 = e.getRawY(); ox = lp.x; oy = lp.y; moved = false;
                       return true;
                     case MotionEvent.ACTION_MOVE:
                       float mx = e.getRawX() - sx0, my = e.getRawY() - sy0;
                       if (Math.abs(mx) + Math.abs(my) > 24) moved = true;
-                      if (moved) { rlp.x = (int) (ox + mx); rlp.y = (int) (oy + my); wm.updateViewLayout(rbtn, rlp); }
+                      if (moved) { lp.x = (int) (ox + mx); lp.y = (int) (oy + my); wm.updateViewLayout(tv, lp); }
                       return true;
                     case MotionEvent.ACTION_UP:
-                      if (!moved) newGame();
+                      if (!moved) onTap.run();
                       return true;
                   }
                   return false;
                 }
               });
-              wm.addView(rbtn, rlp);
+              wm.addView(tv, lp);
+              return tv;
+            }
+
+            void setWaitBtn(final boolean on) {
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  if (ebtn == null) return;
+                  ebtn.setText(on ? "■ Dừng chờ" : "⏱ Đối thủ đi");
+                  ((GradientDrawable) ebtn.getBackground()).setColor(on ? 0xEEE65100 : 0xEE1565C0);
+                }
+              });
+            }
+
+            // Bấm sau khi bạn đã đi: app đợi tới khi thấy đối thủ đi xong (bàn cờ đổi và đứng yên) rồi mới tính nước cho bạn
+            void toggleWait() {
+              if (!running || calibrating) return;
+              if (waiting) {
+                waiting = false;
+                setWaitBtn(false);
+                say("Đã dừng chờ", "Bấm nút xanh khi tới lượt đối thủ");
+                return;
+              }
+              if (cur == null) {
+                say("Chưa có bàn cờ", "Bấm \"↻ Ván mới\" (hoặc chạm bong bóng) để đọc bàn cờ trước");
+                return;
+              }
+              cancel = true;
+              if (uci != null) uci.abort();
+              prevOcc = ""; stableN = 0; miss = 0;
+              waiting = true;
+              setWaitBtn(true);
+              say("Đang chờ đối thủ đi…", "Bạn cứ đi nước của mình; app tự đợi tới khi thấy đối thủ đi xong");
             }
 
             // Ván mới: xoá toàn bộ trí nhớ, báo Pikafish bắt đầu ván mới và đọc/tính lại từ đầu
             void newGame() {
               if (!running) return;
+              cancel = true;
+              waiting = false;
+              setWaitBtn(false);
               if (uci != null) uci.abort();
               say("Ván mới…", "Đang đặt lại");
               bg.post(new Runnable() {
                 @Override public void run() {
-                  prevOcc = ""; doneOcc = ""; lastB = null; myTurn = true;
+                  prevOcc = ""; cur = null; turnMine = true; stableN = 0; miss = 0; lastNote = "";
                   if (recog != null) recog.reset();
                   eng.reset();
                   try { if (uci != null && uci.ready) uci.newGame(); } catch (Throwable t) { }
@@ -1332,15 +1463,6 @@ jobs:
                   say("Ván mới — đang đọc bàn cờ…", null);
                 }
               });
-            }
-
-            static boolean isStart(int[] B) {
-              int[] back = {5, 4, 3, 2, 1, 2, 3, 4, 5};
-              int[] S = new int[90];
-              for (int c = 0; c < 9; c++) { S[c] = -back[c]; S[81 + c] = back[c]; }
-              S[19] = -6; S[25] = -6; S[64] = 6; S[70] = 6;
-              for (int c = 0; c < 9; c += 2) { S[27 + c] = -7; S[54 + c] = 7; }
-              return java.util.Arrays.equals(S, B);
             }
 
             // Kiểm tra bàn cờ đọc được có hợp lý không (chống đọc sai quân dẫn tới nước đi khờ)
@@ -1463,10 +1585,11 @@ jobs:
               last = null;
               recog.reset();
               prevOcc = "";
-              doneOcc = "";
-              lastB = null;
+              cur = null;
+              waiting = false;
+              setWaitBtn(false);
               calibrating = false;
-              say("Đang chờ…", "Chạm: tính lại · Giữ: căn lại lưới\n" + engNote);
+              say("Căn lưới xong", "Bấm \"↻ Ván mới\" để đọc bàn cờ\nSau mỗi nước của bạn: bấm nút xanh \"⏱ Đối thủ đi\"\n" + engNote);
               bg.removeCallbacks(loop);
               bg.postDelayed(loop, 1200);
             }
@@ -1476,7 +1599,7 @@ jobs:
               @Override public void run() {
                 if (!running) return;
                 try { tick(); } catch (Throwable t) { say("Lỗi", String.valueOf(t)); }
-                bg.postDelayed(this, 700);
+                bg.postDelayed(this, waiting ? 350 : 500);
               }
             };
 
@@ -1494,8 +1617,10 @@ jobs:
               return bm;
             }
 
+            // Chỉ quét khi cần: vừa bấm "Ván mới"/chạm bong bóng (force) hoặc đang chờ đối thủ đi (waiting)
             void tick() {
               if (calibrating) return;
+              if (!force && !waiting) return;
               Image img = reader.acquireLatestImage();
               if (img != null) {
                 Bitmap nb = toBmp(img);
@@ -1505,51 +1630,113 @@ jobs:
               Bitmap bm = last;
               if (bm == null) return;
               String occ = recog.scan(bm, g);
-              boolean f = force;
-              boolean stable = occ.equals(prevOcc);
-              prevOcc = occ;
-              if (!f && (!stable || occ.equals(doneOcc))) return;
-              force = false;
+              if (force) {
+                force = false;
+                waiting = false;
+                setWaitBtn(false);
+                fullRead(bm);
+                return;
+              }
+              // đang chờ: đợi bàn cờ đổi rồi đứng yên (hết hiệu ứng quân bay)
+              if (!occ.equals(prevOcc)) { prevOcc = occ; stableN = 0; return; }
+              stableN++;
+              if (stableN < 1 || cur == null) return;
+              int[] o = recog.occ.clone();
+              int[] r = Track.explain(eng, cur, turnMine, o, mineC);
+              if (r != null && r.length == 0) { miss = 0; return; }   // chưa có gì thay đổi: tiếp tục đợi
+              if (r == null) {
+                miss++;
+                if (miss == 4) say("Chưa khớp nước đi…", "Lệch " + Track.diff(cur, o, mineC) + " ô so với bàn cờ đang theo dõi. Nếu kẹt, chạm bong bóng để đọc lại.");
+                if (miss >= 10) { miss = 0; rereadWhileWaiting(bm); }
+                return;
+              }
+              miss = 0;
+              StringBuilder note = new StringBuilder();
+              for (int m : r) {
+                String t = turnMine ? Notation.viet(cur, m) : Notation.viet(Engine.flip(cur), Engine.fm(m));
+                if (note.length() > 0) note.append("  ·  ");
+                note.append(turnMine ? "Bạn: " : "Đối thủ: ").append(t);
+                Track.apply(cur, m);
+                turnMine = !turnMine;
+              }
+              lastNote = note.toString();
+              if (!turnMine) { say("Đã ghi nước của bạn", lastNote + "\nĐang chờ đối thủ đi…"); return; }
+              waiting = false;
+              setWaitBtn(false);
+              suggest();
+            }
+
+            // Đọc bàn cờ từ màn hình (đọc chữ trên quân). Thế xuất phát thì khỏi đọc chữ. Trả về false nếu đọc không ổn.
+            void fullRead(Bitmap bm) {
               int pieces = 0;
               for (int i = 0; i < 90; i++) if (recog.occ[i] != 0) pieces++;
-              doneOcc = occ;
               if (pieces < 2) { say("Chưa thấy bàn cờ", "Giữ bong bóng để căn lại lưới"); return; }
-              int[] B = recog.classify(bm, g, f);
+              mineC = recog.mineOcc;
+              int[] o = recog.occ.clone();
+              boolean start = Track.isStartOcc(o, mineC);
+              int[] B = start ? Track.startBoard() : readBoard(bm);
+              if (B == null) return;
+              cur = B;
+              turnMine = !(start && mineC == 2);   // mình cầm đen thì đỏ đi trước
+              lastNote = "";
+              if (!turnMine) {
+                prevOcc = ""; stableN = 0; miss = 0;
+                waiting = true;
+                setWaitBtn(true);
+                say("Đối thủ đi trước…", "App đang chờ đối thủ đi xong");
+                return;
+              }
+              suggest();
+            }
+
+            // Kẹt không khớp nước: đọc lại cả bàn; nếu đọc ổn thì coi như tới lượt mình
+            void rereadWhileWaiting(Bitmap bm) {
+              recog.mineOcc = mineC;
+              int[] B = readBoard(bm);
+              if (B == null) return;
+              cur = B;
+              turnMine = true;
+              lastNote = "Đã đọc lại bàn cờ";
+              waiting = false;
+              setWaitBtn(false);
+              suggest();
+            }
+
+            int[] readBoard(Bitmap bm) {
+              int[] B = recog.classify(bm, g, true);
               if (recog.unknown > 0) {
                 say("Không đọc được " + recog.unknown + " quân", "Chạm bong bóng để thử lại." + recog.unknownAt);
-                return;
+                return null;
               }
               int kM = 0, kO = 0;
               for (int p : B) { if (p == 1) kM++; if (p == -1) kO++; }
               if (kM != 1 || kO != 1) {
                 say("Thiếu Tướng/Soái", "Kiểm tra căn lưới (giữ bong bóng) hoặc chạm để đọc lại");
-                return;
+                return null;
               }
-              boolean nt = myTurn;
-              if (f || lastB == null) nt = !(isStart(B) && recog.mineOcc == 2);   // mình cầm đen thì đỏ đi trước
-              else {
-                int vac = 0, mover = 0;
-                for (int i = 0; i < 90; i++) if (B[i] == 0 && lastB[i] != 0) { vac++; mover = lastB[i]; }
-                if (vac == 1) nt = mover < 0;   // quân đối thủ vừa đi -> tới lượt mình
-              }
-              String why = bad(B, nt);
+              String why = bad(B, true);
               if (why != null) {
                 recog.reset();
                 say("Bàn cờ đọc có vẻ sai", why + "\nChạm bong bóng để đọc lại · Giữ: căn lại lưới");
-                return;
+                return null;
               }
-              myTurn = nt;
-              lastB = B;
-              if (!myTurn) { say("Đối thủ đang đi…", null); return; }
+              return B;
+            }
+
+            // Tính nước tốt nhất cho bàn cờ đang theo dõi (tới lượt mình)
+            void suggest() {
+              cancel = false;
+              final int[] B = cur.clone();
               if ((uci == null || !uci.ready) && engTry < 3) {
                 engTry++;
                 say("Đang khởi động lại Pikafish…", null);
                 startEngine();
               }
-              say("Đang tính nước đi…", null);
+              say("Đang tính nước đi…", lastNote.isEmpty() ? null : lastNote);
               int[] r;
               String tag = "Engine dự phòng ✗ " + (uci != null ? uci.err : "");
               Uci.Res pr = (uci != null && uci.ready) ? uci.go(Uci.fen(B), THINK_MS) : null;
+              if (cancel) return;   // bạn đã bấm tiếp trong lúc máy nghĩ
               if (pr != null && pr.best.startsWith("(")) { say("Hết nước đi", "Ván cờ đã kết thúc?"); return; }
               if (pr != null && pr.best.length() >= 4) {
                 int m0 = Uci.parse(pr.best);
@@ -1569,9 +1756,12 @@ jobs:
               } else {
                 r = eng.best(B, 6000);
               }
+              if (cancel) return;
               if (r == null) { say("Hết nước đi", "Ván cờ đã kết thúc?"); return; }
               String chk = eng.gives(B, r[0]) ? " · CHIẾU!" : "";
-              say("▶ " + Notation.viet(B, r[0]), Notation.sq(B, r[0]) + chk + "\n" + eng.verdict(r[1]) + " · sâu " + r[2] + " · " + tag + "\nDự kiến: " + eng.line(B, 5));
+              String head = lastNote.isEmpty() ? "" : lastNote + "\n";
+              say("▶ " + Notation.viet(B, r[0]), head + Notation.sq(B, r[0]) + chk + "\n" + eng.verdict(r[1]) + " · sâu " + r[2] + " · " + tag + "\nDự kiến: " + eng.line(B, 5)
+                  + "\nĐi xong bấm nút xanh \"Đối thủ đi\"");
             }
 
             @Override public void onDestroy() {
@@ -1579,6 +1769,7 @@ jobs:
               try { if (bubble != null) wm.removeView(bubble); } catch (Exception e) { }
               try { if (calib != null) wm.removeView(calib); } catch (Exception e) { }
               try { if (rbtn != null) wm.removeView(rbtn); } catch (Exception e) { }
+              try { if (ebtn != null) wm.removeView(ebtn); } catch (Exception e) { }
               try { if (vd != null) vd.release(); } catch (Exception e) { }
               try { if (reader != null) reader.close(); } catch (Exception e) { }
               try { if (proj != null) proj.stop(); } catch (Exception e) { }

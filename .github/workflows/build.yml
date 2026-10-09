@@ -818,6 +818,7 @@ jobs:
             volatile boolean ready;
             String name = "";
             volatile String err = "";
+            String nnue = "";
 
             static boolean hasDotprod() {
               try (BufferedReader br = new BufferedReader(new FileReader("/proc/cpuinfo"))) {
@@ -827,7 +828,8 @@ jobs:
               return false;
             }
 
-            boolean start(String nativeDir) {
+            boolean start(String nativeDir, String nnuePath) {
+              nnue = nnuePath;
               String[] cand = hasDotprod() ? new String[]{"libpikafish_dp.so", "libpikafish.so"} : new String[]{"libpikafish.so"};
               err = "";
               for (String f : cand) {
@@ -835,7 +837,7 @@ jobs:
                 if (!ex.exists()) { err = "thiếu " + f; continue; }
                 try {
                   if (boot(ex)) { name = f; return true; }
-                  err = "không phản hồi (" + f + ")";
+                  if (err.isEmpty()) err = "không phản hồi (" + f + ")";
                 } catch (Throwable t) { err = f + ": " + t.getMessage(); }
                 stop();
               }
@@ -862,6 +864,7 @@ jobs:
               rd.start();
               send("uci");
               if (!waitFor("uciok", 20000)) return false;
+              send("setoption name EvalFile value " + nnue);
               int th = Math.min(8, Math.max(1, Runtime.getRuntime().availableProcessors()));
               send("setoption name Threads value " + th);
               send("setoption name Hash value 128");
@@ -881,6 +884,7 @@ jobs:
               while (System.currentTimeMillis() < end) {
                 String l = q.poll(200, TimeUnit.MILLISECONDS);
                 if (l == null) continue;
+                if (l.startsWith("info string ERROR")) err = l.substring(12);
                 if (l.equals("#eof")) return false;
                 if (l.startsWith(tok)) return true;
               }
@@ -901,6 +905,7 @@ jobs:
                   if (now > end && !stopped) { send("stop"); stopped = true; }
                   String l = q.poll(200, TimeUnit.MILLISECONDS);
                   if (l == null) continue;
+                  if (l.startsWith("info string ERROR")) err = l.substring(12);
                   if (l.equals("#eof")) { ready = false; break; }
                   if (l.startsWith("bestmove")) {
                     String[] t = l.split(" ");
@@ -1124,6 +1129,7 @@ jobs:
             String prevOcc = "", doneOcc = "";
             int[] lastB;
             volatile boolean calibrating, running, force;
+            int engTry = 0;
 
             @Override public IBinder onBind(Intent i) { return null; }
 
@@ -1163,11 +1169,9 @@ jobs:
               g[2] = sx;
               g[3] = sp.getFloat("sy", sx * 1.007f);
               running = true;
-              uci = new Uci();
               bg.post(new Runnable() {
                 @Override public void run() {
-                  try { uci.start(getApplicationInfo().nativeLibraryDir); } catch (Throwable t) { }
-                  engNote = uci.ready ? "Pikafish ✓ sẵn sàng" : "Pikafish ✗ " + uci.err + " → dùng engine dự phòng";
+                  startEngine();
                   if (calibrating) say("Căn lưới bàn cờ rồi bấm LƯU", engNote);
                 }
               });
@@ -1175,6 +1179,45 @@ jobs:
               makeResetBtn();
               showCalib();
               return START_NOT_STICKY;
+            }
+
+            // Chép mạng NNUE từ assets ra bộ nhớ app (Pikafish cần đọc file thật). Trả về đường dẫn hoặc null.
+            String prepareNet() {
+              try {
+                java.io.File out = new java.io.File(getFilesDir(), "pikafish.nnue");
+                long want = sp.getLong("netLen", -1);
+                if (out.exists() && out.length() > 1000000 && out.length() == want) return out.getAbsolutePath();
+                java.io.File tmp = new java.io.File(getFilesDir(), "pikafish.nnue.tmp");
+                java.io.InputStream in = getAssets().open("pikafish.nnue");
+                java.io.FileOutputStream fo = new java.io.FileOutputStream(tmp);
+                byte[] buf = new byte[1 << 16];
+                int n;
+                while ((n = in.read(buf)) > 0) fo.write(buf, 0, n);
+                fo.close(); in.close();
+                if (tmp.length() < 1000000) { tmp.delete(); netErr = "file NNUE trong APK bị hỏng"; return null; }
+                if (out.exists()) out.delete();
+                if (!tmp.renameTo(out)) { netErr = "không ghi được file NNUE"; return null; }
+                sp.edit().putLong("netLen", out.length()).apply();
+                return out.getAbsolutePath();
+              } catch (Throwable t) {
+                netErr = "thiếu file NNUE trong APK (" + t.getMessage() + ")";
+                return null;
+              }
+            }
+
+            String netErr = "";
+
+            void startEngine() {
+              try { if (uci != null) uci.stop(); } catch (Throwable t) { }
+              Uci u = new Uci();
+              uci = u;
+              String net = prepareNet();
+              if (net == null) {
+                u.err = netErr;
+              } else {
+                try { u.start(getApplicationInfo().nativeLibraryDir, net); } catch (Throwable t) { u.err = String.valueOf(t.getMessage()); }
+              }
+              engNote = u.ready ? "Pikafish ✓ sẵn sàng" : "Pikafish ✗ " + u.err + " → dùng engine dự phòng";
             }
 
             void startFg() {
@@ -1498,9 +1541,14 @@ jobs:
               myTurn = nt;
               lastB = B;
               if (!myTurn) { say("Đối thủ đang đi…", null); return; }
+              if ((uci == null || !uci.ready) && engTry < 3) {
+                engTry++;
+                say("Đang khởi động lại Pikafish…", null);
+                startEngine();
+              }
               say("Đang tính nước đi…", null);
               int[] r;
-              String tag = "Engine dự phòng";
+              String tag = "Engine dự phòng ✗ " + (uci != null ? uci.err : "");
               Uci.Res pr = (uci != null && uci.ready) ? uci.go(Uci.fen(B), THINK_MS) : null;
               if (pr != null && pr.best.startsWith("(")) { say("Hết nước đi", "Ván cờ đã kết thúc?"); return; }
               if (pr != null && pr.best.length() >= 4) {
@@ -1517,6 +1565,7 @@ jobs:
                 }
                 r = new int[]{m0, sc0, pr.depth};
                 tag = "Pikafish";
+                engTry = 0;
               } else {
                 r = eng.best(B, 6000);
               }
@@ -1564,6 +1613,19 @@ jobs:
             echo "Khong build duoc ban dotprod, chi dung ban armv8"
           fi
           ls -l "$OUTD"
+
+      - name: Tai mang NNUE cua Pikafish (BAT BUOC - thieu file nay engine se tu thoat)
+        run: |
+          set -e
+          mkdir -p app/src/main/assets
+          curl -fL --retry 3 --max-time 900 -o app/src/main/assets/pikafish.nnue https://github.com/official-pikafish/Networks/releases/download/master-net/pikafish.nnue
+          SZ=$(stat -c %s app/src/main/assets/pikafish.nnue)
+          echo "NNUE size: $SZ"
+          test "$SZ" -gt 10000000
+
+      - name: Kiem tra engine da duoc build
+        run: |
+          test -f app/src/main/jniLibs/arm64-v8a/libpikafish.so || { echo "LOI: build Pikafish that bai, APK se khong co engine manh"; exit 1; }
 
       - name: Build APK
         run: |

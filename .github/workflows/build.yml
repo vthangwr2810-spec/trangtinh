@@ -1,1 +1,943 @@
+name: Build APK Tro ly Co Tuong
 
+# Chi can tai file nay len GitHub tai: .github/workflows/build.yml
+# Sau do vao tab Actions -> Build APK -> tai file CoTuongHelper-APK o muc Artifacts.
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Tao ma nguon du an
+        run: |
+          set -e
+          mkdir -p $(dirname settings.gradle)
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+            repositories { google(); mavenCentral() }
+          }
+          rootProject.name = 'CoTuongHelper'
+          include ':app'
+          EOF
+          mkdir -p $(dirname build.gradle)
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          EOF
+          mkdir -p $(dirname gradle.properties)
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          EOF
+          mkdir -p $(dirname app/build.gradle)
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+            namespace 'com.cotuong.helper'
+            compileSdk 34
+            defaultConfig {
+              applicationId 'com.cotuong.helper'
+              minSdk 26
+              targetSdk 34
+              versionCode 1
+              versionName '1.0'
+            }
+            compileOptions {
+              sourceCompatibility JavaVersion.VERSION_17
+              targetCompatibility JavaVersion.VERSION_17
+            }
+          }
+          tasks.withType(JavaCompile) { options.encoding = 'UTF-8' }
+          dependencies {
+            implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+            implementation 'com.google.android.gms:play-services-tasks:18.2.0'
+          }
+          EOF
+          mkdir -p $(dirname app/src/main/AndroidManifest.xml)
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+            <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+            <application android:label="Trợ lý Cờ Tướng" android:theme="@android:style/Theme.DeviceDefault.Light">
+              <activity android:name=".MainActivity" android:exported="true">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+              <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="mediaProjection"/>
+            </application>
+          </manifest>
+          EOF
+          mkdir -p $(dirname app/src/main/java/com/cotuong/helper/Engine.java)
+          cat > app/src/main/java/com/cotuong/helper/Engine.java <<'EOF'
+          package com.cotuong.helper;
+
+          class Engine {
+            static final int[] DR = {-1, 1, 0, 0}, DC = {0, 0, -1, 1};
+            static final int[] XR = {-1, -1, 1, 1}, XC = {-1, 1, -1, 1};
+            static final int[] KR = {-2, -2, -1, -1, 1, 1, 2, 2}, KC = {-1, 1, -2, 2, -2, 2, -1, 1};
+            static final int[] V = {0, 1000, 20, 20, 45, 100, 48, 10};
+            static final int INF = 100000, MATE = 50000;
+            int[] b = new int[90];
+            long deadline;
+            boolean stop;
+            int nodes, rootBest, pv;
+
+            // board: 90 o, mine > 0 (bottom, moves toward row 0), opponent < 0. 1=K 2=A 3=B 4=N 5=R 6=C 7=P
+            // returns {move, score, depth} or null. move = from << 8 | to
+            int[] best(int[] board, int ms) {
+              b = board.clone();
+              long t0 = System.currentTimeMillis();
+              deadline = t0 + ms; stop = false; nodes = 0; pv = 0;
+              int bm = 0, bs = 0, dd = 0;
+              for (int d = 1; d <= 12; d++) {
+                rootBest = 0;
+                int s = search(1, d, -INF, INF, 0);
+                if (stop) break;
+                if (rootBest != 0) { bm = rootBest; bs = s; pv = bm; dd = d; }
+                if (rootBest == 0 || Math.abs(s) > MATE - 100) break;
+                if (System.currentTimeMillis() - t0 > ms * 0.45) break;
+              }
+              return bm == 0 ? null : new int[]{bm, bs, dd};
+            }
+
+            boolean gives(int[] board, int m) {
+              b = board.clone();
+              make(m);
+              return inCheck(-1);
+            }
+
+            int make(int m) { int f = m >> 8, t = m & 255, c = b[t]; b[t] = b[f]; b[f] = 0; return c; }
+            void unmake(int m, int c) { int f = m >> 8, t = m & 255; b[f] = b[t]; b[t] = c; }
+
+            boolean pal(int s, int r, int c) { return c >= 3 && c <= 5 && (s > 0 ? r >= 7 && r <= 9 : r >= 0 && r <= 2); }
+
+            int add(int[] mv, int n, int from, int r, int c, int s, boolean co) {
+              int q = b[r * 9 + c];
+              if (q != 0 && (q > 0) == (s > 0)) return n;
+              if (co && q == 0) return n;
+              mv[n] = (from << 8) | (r * 9 + c);
+              return n + 1;
+            }
+
+            int gen(int s, int[] mv, boolean co) {
+              int n = 0;
+              for (int i = 0; i < 90; i++) {
+                int p = b[i];
+                if (p == 0 || (p > 0) != (s > 0)) continue;
+                int t = p > 0 ? p : -p, r = i / 9, c = i % 9;
+                if (t == 1) {
+                  for (int d = 0; d < 4; d++) { int nr = r + DR[d], nc = c + DC[d]; if (pal(s, nr, nc)) n = add(mv, n, i, nr, nc, s, co); }
+                } else if (t == 2) {
+                  for (int d = 0; d < 4; d++) { int nr = r + XR[d], nc = c + XC[d]; if (pal(s, nr, nc)) n = add(mv, n, i, nr, nc, s, co); }
+                } else if (t == 3) {
+                  for (int d = 0; d < 4; d++) {
+                    int nr = r + 2 * XR[d], nc = c + 2 * XC[d];
+                    if (nc < 0 || nc > 8 || nr < 0 || nr > 9) continue;
+                    if (s > 0 ? nr < 5 : nr > 4) continue;
+                    if (b[(r + XR[d]) * 9 + c + XC[d]] != 0) continue;
+                    n = add(mv, n, i, nr, nc, s, co);
+                  }
+                } else if (t == 4) {
+                  for (int k = 0; k < 8; k++) {
+                    int nr = r + KR[k], nc = c + KC[k];
+                    if (nr < 0 || nr > 9 || nc < 0 || nc > 8) continue;
+                    int lr = Math.abs(KR[k]) == 2 ? r + KR[k] / 2 : r;
+                    int lc = Math.abs(KR[k]) == 2 ? c : c + KC[k] / 2;
+                    if (b[lr * 9 + lc] != 0) continue;
+                    n = add(mv, n, i, nr, nc, s, co);
+                  }
+                } else if (t == 5) {
+                  for (int d = 0; d < 4; d++) {
+                    int nr = r + DR[d], nc = c + DC[d];
+                    while (nr >= 0 && nr < 10 && nc >= 0 && nc < 9) {
+                      int q = b[nr * 9 + nc];
+                      n = add(mv, n, i, nr, nc, s, co);
+                      if (q != 0) break;
+                      nr += DR[d]; nc += DC[d];
+                    }
+                  }
+                } else if (t == 6) {
+                  for (int d = 0; d < 4; d++) {
+                    int nr = r + DR[d], nc = c + DC[d];
+                    boolean j = false;
+                    while (nr >= 0 && nr < 10 && nc >= 0 && nc < 9) {
+                      int q = b[nr * 9 + nc];
+                      if (!j) {
+                        if (q == 0) n = add(mv, n, i, nr, nc, s, co); else j = true;
+                      } else if (q != 0) {
+                        n = add(mv, n, i, nr, nc, s, co);
+                        break;
+                      }
+                      nr += DR[d]; nc += DC[d];
+                    }
+                  }
+                } else {
+                  int f = s > 0 ? -1 : 1;
+                  if (r + f >= 0 && r + f <= 9) n = add(mv, n, i, r + f, c, s, co);
+                  boolean cr = s > 0 ? r <= 4 : r >= 5;
+                  if (cr) {
+                    if (c > 0) n = add(mv, n, i, r, c - 1, s, co);
+                    if (c < 8) n = add(mv, n, i, r, c + 1, s, co);
+                  }
+                }
+              }
+              return n;
+            }
+
+            boolean inCheck(int s) {
+              int kp = -1;
+              for (int i = 0; i < 90; i++) if (b[i] == s) { kp = i; break; }
+              if (kp < 0) return true;
+              int r = kp / 9, c = kp % 9, o = -s;
+              for (int d = 0; d < 4; d++) {
+                int nr = r + DR[d], nc = c + DC[d], cnt = 0;
+                while (nr >= 0 && nr < 10 && nc >= 0 && nc < 9) {
+                  int q = b[nr * 9 + nc];
+                  if (q != 0) {
+                    cnt++;
+                    if (cnt == 1) { if (q == o * 5 || q == o) return true; }
+                    else { if (q == o * 6) return true; break; }
+                  }
+                  nr += DR[d]; nc += DC[d];
+                }
+              }
+              for (int k = 0; k < 8; k++) {
+                int nr = r + KR[k], nc = c + KC[k];
+                if (nr < 0 || nr > 9 || nc < 0 || nc > 8 || b[nr * 9 + nc] != o * 4) continue;
+                int lr, lc;
+                if (Math.abs(KR[k]) == 2) { lr = nr - KR[k] / 2; lc = nc; } else { lr = nr; lc = nc - KC[k] / 2; }
+                if (b[lr * 9 + lc] == 0) return true;
+              }
+              int fo = o > 0 ? -1 : 1;
+              int pr = r - fo;
+              if (pr >= 0 && pr <= 9 && b[pr * 9 + c] == o * 7) return true;
+              boolean cr = o > 0 ? r <= 4 : r >= 5;
+              if (cr) {
+                if (c > 0 && b[r * 9 + c - 1] == o * 7) return true;
+                if (c < 8 && b[r * 9 + c + 1] == o * 7) return true;
+              }
+              return false;
+            }
+
+            int eval(int s) {
+              int tot = 0;
+              for (int i = 0; i < 90; i++) {
+                int p = b[i];
+                if (p == 0) continue;
+                int t = p > 0 ? p : -p;
+                if (t == 1) continue;
+                int r = i / 9, c = i % 9, adv = p > 0 ? 9 - r : r, v = V[t];
+                if (t == 7) { if (adv >= 5) v += 20 + (adv - 5) * 5; }
+                else if (t >= 4) v += 3 * (4 - Math.abs(c - 4));
+                tot += p > 0 ? v : -v;
+              }
+              return s > 0 ? tot : -tot;
+            }
+
+            void score(int[] mv, int[] sc, int n, int ply) {
+              for (int i = 0; i < n; i++) {
+                int m = mv[i], c = b[m & 255], s = 0;
+                if (c != 0) s = V[Math.abs(c)] * 16 - V[Math.abs(b[m >> 8])];
+                if (ply == 0 && m == pv) s += 1000000;
+                sc[i] = s;
+              }
+            }
+
+            int search(int s, int depth, int alpha, int beta, int ply) {
+              if ((++nodes & 2047) == 0 && System.currentTimeMillis() > deadline) stop = true;
+              if (stop) return 0;
+              if (depth <= 0) return qs(s, alpha, beta, 0);
+              int[] mv = new int[160], sc = new int[160];
+              int n = gen(s, mv, false);
+              score(mv, sc, n, ply);
+              int best = -INF;
+              boolean any = false;
+              for (int i = 0; i < n; i++) {
+                int bi = i;
+                for (int j = i + 1; j < n; j++) if (sc[j] > sc[bi]) bi = j;
+                int m = mv[bi];
+                mv[bi] = mv[i]; sc[bi] = sc[i];
+                int cap = make(m);
+                if (inCheck(s)) { unmake(m, cap); continue; }
+                any = true;
+                int ext = (ply < 8 && inCheck(-s)) ? 1 : 0;
+                int v = -search(-s, depth - 1 + ext, -beta, -alpha, ply + 1);
+                unmake(m, cap);
+                if (stop) return 0;
+                if (v > best) { best = v; if (ply == 0) rootBest = m; }
+                if (v > alpha) alpha = v;
+                if (alpha >= beta) break;
+              }
+              if (!any) return -MATE + ply;
+              return best;
+            }
+
+            int qs(int s, int alpha, int beta, int qd) {
+              if ((++nodes & 2047) == 0 && System.currentTimeMillis() > deadline) stop = true;
+              if (stop) return 0;
+              int st = eval(s);
+              if (qd >= 6 || st >= beta) return st;
+              if (st > alpha) alpha = st;
+              int[] mv = new int[160], sc = new int[160];
+              int n = gen(s, mv, true);
+              score(mv, sc, n, 1);
+              for (int i = 0; i < n; i++) {
+                int bi = i;
+                for (int j = i + 1; j < n; j++) if (sc[j] > sc[bi]) bi = j;
+                int m = mv[bi];
+                mv[bi] = mv[i]; sc[bi] = sc[i];
+                int cap = make(m);
+                if (inCheck(s)) { unmake(m, cap); continue; }
+                int v = -qs(-s, -beta, -alpha, qd + 1);
+                unmake(m, cap);
+                if (stop) return 0;
+                if (v >= beta) return v;
+                if (v > alpha) alpha = v;
+              }
+              return alpha;
+            }
+          }
+
+          class Notation {
+            static final String[] NAME = {"", "Tướng", "Sĩ", "Tượng", "Mã", "Xe", "Pháo", "Tốt"};
+
+            static String viet(int[] b, int m) {
+              int from = m >> 8, to = m & 255, t = b[from], fr = from / 9, fc = from % 9, tr = to / 9, tc = to % 9;
+              String who = NAME[t] + " " + (9 - fc);
+              int same = 0, other = -1;
+              if (t != 1) for (int r = 0; r < 10; r++) if (r != fr && b[r * 9 + fc] == t) { same++; other = r; }
+              if (same == 1) who = (fr < other ? "Tiền " : "Hậu ") + NAME[t];
+              String act;
+              int num;
+              if (tr == fr) { act = "bình"; num = 9 - tc; }
+              else { act = tr < fr ? "tiến" : "thoái"; num = (t >= 2 && t <= 4) ? 9 - tc : Math.abs(tr - fr); }
+              return who + " " + act + " " + num;
+            }
+
+            static String sq(int[] b, int m) {
+              int from = m >> 8, to = m & 255;
+              return "từ cột " + (9 - from % 9) + " hàng " + (10 - from / 9) + " → cột " + (9 - to % 9) + " hàng " + (10 - to / 9)
+                  + (b[to] != 0 ? " · ăn " + NAME[Math.abs(b[to])] : "");
+            }
+          }
+          EOF
+          mkdir -p $(dirname app/src/main/java/com/cotuong/helper/Recog.java)
+          cat > app/src/main/java/com/cotuong/helper/Recog.java <<'EOF'
+          package com.cotuong.helper;
+
+          import android.graphics.Bitmap;
+          import android.graphics.Canvas;
+          import com.google.android.gms.tasks.Tasks;
+          import com.google.mlkit.vision.common.InputImage;
+          import com.google.mlkit.vision.text.Text;
+          import com.google.mlkit.vision.text.TextRecognition;
+          import com.google.mlkit.vision.text.TextRecognizer;
+          import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
+          import java.util.Arrays;
+          import java.util.concurrent.TimeUnit;
+
+          class Recog {
+            static final String[] GROUPS = {"", "帥帅將将", "仕士", "相象", "傌馬马", "俥車车", "炮砲", "兵卒"};
+            static final int SG = 64;
+            final TextRecognizer rec = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
+            final int[] occ = new int[90];      // 0 trống, 1 đỏ, 2 đen
+            final int[] type = new int[90];
+            final int[] cachedOcc = new int[90];
+            final int[] sig = new int[90 * SG];
+            final boolean[] ok = new boolean[90];
+            int unknown, mineOcc = 1;
+            String unknownAt = "";
+
+            void reset() { Arrays.fill(ok, false); }
+
+            static int lum(int p) { return (((p >> 16) & 255) * 30 + ((p >> 8) & 255) * 59 + (p & 255) * 11) / 100; }
+
+            static boolean red(int p) {
+              int r = (p >> 16) & 255, g = (p >> 8) & 255, b = p & 255;
+              return r > 130 && r - g > 55 && r - b > 55;
+            }
+
+            static boolean ink(int p) { return red(p) || lum(p) < 100; }
+
+            // Quét 90 giao điểm: quân nào có viền tròn tối quanh tâm. Trả về chuỗi để so sánh ổn định.
+            String scan(Bitmap bm, float[] g) {
+              StringBuilder sb = new StringBuilder(90);
+              int[] cnt = new int[3];
+              for (int i = 0; i < 90; i++) {
+                float cx = g[0] + (i % 9) * g[2], cy = g[1] + (i / 9) * g[3];
+                int o = 0;
+                if (ringDark(bm, cx, cy, g[2]) > 0.5f) o = isRed(bm, cx, cy, g[2]) ? 1 : 2;
+                occ[i] = o;
+                sb.append(o);
+                if (i / 9 >= 7 && o > 0) cnt[o]++;
+              }
+              mineOcc = cnt[1] >= cnt[2] ? 1 : 2;   // màu đa số ở nửa dưới = quân của mình
+              return sb.toString();
+            }
+
+            float ringDark(Bitmap bm, float cx, float cy, float st) {
+              int w = bm.getWidth(), h = bm.getHeight();
+              float best = 0;
+              for (float f = 0.40f; f <= 0.481f; f += 0.02f) {
+                int d = 0, t = 0;
+                for (int k = 0; k < 36; k++) {
+                  double a = k * Math.PI / 18;
+                  int x = Math.round(cx + (float) Math.cos(a) * f * st), y = Math.round(cy + (float) Math.sin(a) * f * st);
+                  if (x < 0 || y < 0 || x >= w || y >= h) continue;
+                  t++;
+                  if (lum(bm.getPixel(x, y)) < 125) d++;
+                }
+                if (t > 20) best = Math.max(best, (float) d / t);
+              }
+              return best;
+            }
+
+            boolean isRed(Bitmap bm, float cx, float cy, float st) {
+              int r = 0, d = 0, w = bm.getWidth(), h = bm.getHeight();
+              for (int a = -8; a <= 8; a++) for (int b = -8; b <= 8; b++) {
+                if (a * a + b * b > 64) continue;
+                int x = Math.round(cx + a * st * 0.036f), y = Math.round(cy + b * st * 0.036f);
+                if (x < 0 || y < 0 || x >= w || y >= h) continue;
+                int p = bm.getPixel(x, y);
+                if (red(p)) r++; else if (lum(p) < 90) d++;
+              }
+              return r > d;
+            }
+
+            int[] signature(Bitmap bm, float cx, float cy, float st) {
+              int[] s = new int[SG];
+              int w = bm.getWidth(), h = bm.getHeight();
+              for (int a = 0; a < 8; a++) for (int b = 0; b < 8; b++) {
+                int x = Math.round(cx + (a - 3.5f) * 0.085f * st), y = Math.round(cy + (b - 3.5f) * 0.085f * st);
+                s[a * 8 + b] = (x < 0 || y < 0 || x >= w || y >= h) ? 0 : lum(bm.getPixel(x, y));
+              }
+              return s;
+            }
+
+            // Trả về bàn cờ: quân của mình (nửa dưới) dương, đối thủ âm. Quân đọc không ra = ±9.
+            int[] classify(Bitmap bm, float[] g, boolean force) {
+              if (force) reset();
+              int[] B = new int[90];
+              unknown = 0;
+              StringBuilder u = new StringBuilder();
+              for (int i = 0; i < 90; i++) {
+                if (occ[i] == 0) { ok[i] = false; continue; }
+                float cx = g[0] + (i % 9) * g[2], cy = g[1] + (i / 9) * g[3];
+                int[] s = signature(bm, cx, cy, g[2]);
+                boolean same = ok[i] && cachedOcc[i] == occ[i];
+                if (same) {
+                  int d = 0;
+                  for (int k = 0; k < SG; k++) d += Math.abs(s[k] - sig[i * SG + k]);
+                  same = d < SG * 10;
+                }
+                if (!same) {
+                  type[i] = ocr(bm, cx, cy, g[2]);
+                  System.arraycopy(s, 0, sig, i * SG, SG);
+                  cachedOcc[i] = occ[i];
+                  ok[i] = type[i] != 0;
+                }
+                int sg = occ[i] == mineOcc ? 1 : -1;
+                if (type[i] == 0) {
+                  unknown++;
+                  u.append(" [cột ").append(i % 9 + 1).append(" dòng ").append(i / 9 + 1).append(" từ trên]");
+                  B[i] = sg * 9;
+                } else B[i] = sg * type[i];
+              }
+              unknownAt = u.toString();
+              return B;
+            }
+
+            int ocr(Bitmap bm, float cx, float cy, float st) {
+              int half = Math.round(0.36f * st), x = Math.round(cx) - half, y = Math.round(cy) - half, w = 2 * half;
+              if (x < 0 || y < 0 || x + w > bm.getWidth() || y + w > bm.getHeight()) return 0;
+              try {
+                Bitmap crop = Bitmap.createBitmap(bm, x, y, w, w);
+                Bitmap sc = Bitmap.createScaledBitmap(crop, 96, 96, true);
+                Bitmap bin = Bitmap.createBitmap(160, 160, Bitmap.Config.ARGB_8888);
+                bin.eraseColor(0xFFFFFFFF);
+                for (int a = 0; a < 96; a++) for (int b = 0; b < 96; b++) {
+                  int dx = a - 48, dy = b - 48;
+                  if (dx * dx + dy * dy > 48 * 48) continue;
+                  if (ink(sc.getPixel(a, b))) bin.setPixel(a + 32, b + 32, 0xFF000000);
+                }
+                int t = run(bin);
+                if (t == 0) {
+                  Bitmap pad = Bitmap.createBitmap(160, 160, Bitmap.Config.ARGB_8888);
+                  pad.eraseColor(0xFFFFFFFF);
+                  new Canvas(pad).drawBitmap(sc, 32, 32, null);
+                  t = run(pad);
+                }
+                return t;
+              } catch (Exception e) {
+                return 0;
+              }
+            }
+
+            int run(Bitmap b) throws Exception {
+              Text t = Tasks.await(rec.process(InputImage.fromBitmap(b, 0)), 4, TimeUnit.SECONDS);
+              String s = t.getText();
+              for (int i = 0; i < s.length(); i++)
+                for (int k = 1; k < 8; k++) if (GROUPS[k].indexOf(s.charAt(i)) >= 0) return k;
+              return 0;
+            }
+          }
+          EOF
+          mkdir -p $(dirname app/src/main/java/com/cotuong/helper/MainActivity.java)
+          cat > app/src/main/java/com/cotuong/helper/MainActivity.java <<'EOF'
+          package com.cotuong.helper;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.media.projection.MediaProjectionManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.view.View;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          public class MainActivity extends Activity {
+            @Override protected void onCreate(Bundle s) {
+              super.onCreate(s);
+              if (Build.VERSION.SDK_INT >= 33) requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
+              LinearLayout l = new LinearLayout(this);
+              l.setOrientation(LinearLayout.VERTICAL);
+              l.setPadding(40, 60, 40, 40);
+              TextView t = new TextView(this);
+              t.setTextSize(16);
+              t.setText("TRỢ LÝ CỜ TƯỚNG\n\n"
+                  + "1. Bấm nút 1 để cấp quyền hiển thị bong bóng.\n"
+                  + "2. Mở game, vào ván cờ. Quay lại đây bấm nút 2, chọn cho phép ghi toàn màn hình (Bắt đầu ngay).\n"
+                  + "3. Quay lại game: lưới xanh hiện lên. Kéo lưới cho các vòng vàng khớp quân cờ (W/H chỉnh độ rộng/cao ô), bấm LƯU.\n"
+                  + "4. Tới lượt bạn, bong bóng sẽ ghi nước đi, ví dụ \"Pháo 8 bình 5\".\n\n"
+                  + "Chạm bong bóng: tính lại. Giữ bong bóng: căn lại lưới. Kéo bong bóng: đổi chỗ (đừng để che bàn cờ).\n"
+                  + "Bàn cờ phải nằm trọn trên màn hình, quân của bạn ở phía dưới.\n");
+              l.addView(t);
+              l.addView(btn("1. Cấp quyền hiển thị trên ứng dụng khác", new View.OnClickListener() {
+                public void onClick(View v) {
+                  startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
+                }
+              }));
+              l.addView(btn("2. Bắt đầu", new View.OnClickListener() {
+                public void onClick(View v) {
+                  if (!Settings.canDrawOverlays(MainActivity.this)) {
+                    Toast.makeText(MainActivity.this, "Hãy cấp quyền ở nút 1 trước", Toast.LENGTH_LONG).show();
+                    return;
+                  }
+                  MediaProjectionManager m = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+                  startActivityForResult(m.createScreenCaptureIntent(), 7);
+                }
+              }));
+              l.addView(btn("Dừng", new View.OnClickListener() {
+                public void onClick(View v) {
+                  Intent i = new Intent(MainActivity.this, CaptureService.class);
+                  i.setAction("STOP");
+                  startService(i);
+                }
+              }));
+              ScrollView sv = new ScrollView(this);
+              sv.addView(l);
+              setContentView(sv);
+            }
+
+            Button btn(String s, View.OnClickListener c) {
+              Button b = new Button(this);
+              b.setText(s);
+              b.setOnClickListener(c);
+              return b;
+            }
+
+            @Override protected void onActivityResult(int rq, int rs, Intent d) {
+              super.onActivityResult(rq, rs, d);
+              if (rq == 7 && rs == RESULT_OK) {
+                Intent i = new Intent(this, CaptureService.class);
+                i.putExtra("rc", rs);
+                i.putExtra("data", d);
+                startForegroundService(i);
+                moveTaskToBack(true);
+              }
+            }
+          }
+          EOF
+          mkdir -p $(dirname app/src/main/java/com/cotuong/helper/CaptureService.java)
+          cat > app/src/main/java/com/cotuong/helper/CaptureService.java <<'EOF'
+          package com.cotuong.helper;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.Service;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.ServiceInfo;
+          import android.graphics.Bitmap;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Paint;
+          import android.graphics.PixelFormat;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.hardware.display.DisplayManager;
+          import android.hardware.display.VirtualDisplay;
+          import android.media.Image;
+          import android.media.ImageReader;
+          import android.media.projection.MediaProjection;
+          import android.media.projection.MediaProjectionManager;
+          import android.os.Build;
+          import android.os.Handler;
+          import android.os.HandlerThread;
+          import android.os.IBinder;
+          import android.os.Looper;
+          import android.text.SpannableStringBuilder;
+          import android.text.Spanned;
+          import android.text.style.RelativeSizeSpan;
+          import android.text.style.StyleSpan;
+          import android.util.DisplayMetrics;
+          import android.view.Gravity;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.widget.Button;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+          import java.nio.ByteBuffer;
+
+          public class CaptureService extends Service {
+            MediaProjection proj;
+            VirtualDisplay vd;
+            ImageReader reader;
+            HandlerThread ht;
+            Handler bg, ui;
+            WindowManager wm;
+            TextView bubble;
+            WindowManager.LayoutParams blp;
+            FrameLayout calib;
+            int W, H;
+            volatile Bitmap last;
+            Recog recog;
+            final Engine eng = new Engine();
+            final float[] g = new float[4];   // x0, y0, bước ngang, bước dọc
+            SharedPreferences sp;
+            String prevOcc = "", doneOcc = "";
+            int[] lastB;
+            volatile boolean calibrating, running, force;
+
+            @Override public IBinder onBind(Intent i) { return null; }
+
+            @Override public void onCreate() {
+              super.onCreate();
+              ui = new Handler(Looper.getMainLooper());
+              ht = new HandlerThread("cap");
+              ht.start();
+              bg = new Handler(ht.getLooper());
+              wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+              sp = getSharedPreferences("cfg", MODE_PRIVATE);
+            }
+
+            @Override public int onStartCommand(Intent in, int flags, int id) {
+              if (in == null) return START_NOT_STICKY;
+              String a = in.getAction();
+              if ("STOP".equals(a)) { stopSelf(); return START_NOT_STICKY; }
+              if (proj != null) return START_NOT_STICKY;
+              startFg();
+              Intent data = in.getParcelableExtra("data");
+              MediaProjectionManager mpm = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+              proj = mpm.getMediaProjection(in.getIntExtra("rc", 0), data);
+              proj.registerCallback(new MediaProjection.Callback() {
+                @Override public void onStop() { stopSelf(); }
+              }, ui);
+              DisplayMetrics dm = new DisplayMetrics();
+              wm.getDefaultDisplay().getRealMetrics(dm);
+              W = dm.widthPixels;
+              H = dm.heightPixels;
+              reader = ImageReader.newInstance(W, H, PixelFormat.RGBA_8888, 2);
+              vd = proj.createVirtualDisplay("cap", W, H, dm.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                  reader.getSurface(), null, null);
+              recog = new Recog();
+              float sx = sp.getFloat("sx", 0.10665f * W);
+              g[0] = sp.getFloat("x0", 0.0759f * W);
+              g[1] = sp.getFloat("y0", 0.297f * H);
+              g[2] = sx;
+              g[3] = sp.getFloat("sy", sx * 1.007f);
+              running = true;
+              makeBubble();
+              showCalib();
+              return START_NOT_STICKY;
+            }
+
+            void startFg() {
+              NotificationManager nm = getSystemService(NotificationManager.class);
+              nm.createNotificationChannel(new NotificationChannel("c", "Cờ tướng", NotificationManager.IMPORTANCE_LOW));
+              Notification n = new Notification.Builder(this, "c")
+                  .setContentTitle("Trợ lý cờ tướng đang chạy")
+                  .setSmallIcon(android.R.drawable.ic_menu_view).build();
+              if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+              else startForeground(1, n);
+            }
+
+            void makeBubble() {
+              bubble = new TextView(this);
+              bubble.setTextColor(Color.WHITE);
+              bubble.setTextSize(14);
+              bubble.setPadding(36, 20, 36, 20);
+              GradientDrawable bgd = new GradientDrawable();
+              bgd.setColor(0xEE1B1B1B);
+              bgd.setCornerRadius(48);
+              bgd.setStroke(3, 0xFFFFC107);
+              bubble.setBackground(bgd);
+              bubble.setText("Căn lưới bàn cờ rồi bấm LƯU");
+              blp = new WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                  WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                  WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                  PixelFormat.TRANSLUCENT);
+              blp.gravity = Gravity.TOP | Gravity.START;
+              blp.x = 24;
+              blp.y = (int) (0.05f * H);
+              bubble.setOnTouchListener(new View.OnTouchListener() {
+                float sx0, sy0, ox, oy;
+                long t0;
+                boolean moved;
+                @Override public boolean onTouch(View v, MotionEvent e) {
+                  switch (e.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                      sx0 = e.getRawX(); sy0 = e.getRawY(); ox = blp.x; oy = blp.y;
+                      t0 = System.currentTimeMillis(); moved = false;
+                      return true;
+                    case MotionEvent.ACTION_MOVE:
+                      float mx = e.getRawX() - sx0, my = e.getRawY() - sy0;
+                      if (Math.abs(mx) + Math.abs(my) > 24) moved = true;
+                      if (moved) { blp.x = (int) (ox + mx); blp.y = (int) (oy + my); wm.updateViewLayout(bubble, blp); }
+                      return true;
+                    case MotionEvent.ACTION_UP:
+                      if (!moved) {
+                        if (System.currentTimeMillis() - t0 > 600) showCalib();
+                        else { force = true; say("Đang đọc lại bàn cờ…", null); }
+                      }
+                      return true;
+                  }
+                  return false;
+                }
+              });
+              wm.addView(bubble, blp);
+            }
+
+            void say(final String big, final String small) {
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  if (bubble == null) return;
+                  SpannableStringBuilder sb = new SpannableStringBuilder(big);
+                  sb.setSpan(new RelativeSizeSpan(1.35f), 0, big.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                  sb.setSpan(new StyleSpan(Typeface.BOLD), 0, big.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                  if (small != null) sb.append("\n").append(small);
+                  bubble.setText(sb);
+                }
+              });
+            }
+
+            // ---------- Căn lưới ----------
+            class GridOverlay extends View {
+              final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              final int[] loc = new int[2];
+              float lx, ly;
+              GridOverlay(Context c) { super(c); p.setStyle(Paint.Style.STROKE); }
+              @Override protected void onDraw(Canvas c) {
+                getLocationOnScreen(loc);
+                float ox = loc[0], oy = loc[1];
+                p.setStrokeWidth(2);
+                p.setColor(0xAA00FF00);
+                for (int r = 0; r < 10; r++)
+                  c.drawLine(g[0] - ox, g[1] + r * g[3] - oy, g[0] + 8 * g[2] - ox, g[1] + r * g[3] - oy, p);
+                for (int k = 0; k < 9; k++)
+                  c.drawLine(g[0] + k * g[2] - ox, g[1] - oy, g[0] + k * g[2] - ox, g[1] + 9 * g[3] - oy, p);
+                p.setStrokeWidth(3);
+                p.setColor(0xCCFFEB3B);
+                for (int r = 0; r < 10; r++) for (int k = 0; k < 9; k++)
+                  c.drawCircle(g[0] + k * g[2] - ox, g[1] + r * g[3] - oy, 0.45f * g[2], p);
+              }
+              @Override public boolean onTouchEvent(MotionEvent e) {
+                if (e.getAction() == MotionEvent.ACTION_DOWN) { lx = e.getRawX(); ly = e.getRawY(); return true; }
+                if (e.getAction() == MotionEvent.ACTION_MOVE) {
+                  g[0] += e.getRawX() - lx; g[1] += e.getRawY() - ly;
+                  lx = e.getRawX(); ly = e.getRawY();
+                  invalidate();
+                }
+                return true;
+              }
+            }
+
+            void showCalib() {
+              if (calibrating) return;
+              calibrating = true;
+              final GridOverlay gv = new GridOverlay(this);
+              calib = new FrameLayout(this);
+              calib.addView(gv, new FrameLayout.LayoutParams(-1, -1));
+              TextView tip = new TextView(this);
+              tip.setText("Kéo lưới cho các vòng vàng khớp từng quân cờ.\nW/H: chỉnh độ rộng/cao ô. Xong bấm LƯU.");
+              tip.setTextColor(Color.WHITE);
+              tip.setBackgroundColor(0xCC000000);
+              tip.setPadding(24, 24, 24, 24);
+              FrameLayout.LayoutParams tl = new FrameLayout.LayoutParams(-1, -2);
+              tl.gravity = Gravity.TOP;
+              calib.addView(tip, tl);
+              LinearLayout bar = new LinearLayout(this);
+              bar.setBackgroundColor(0xCC000000);
+              String[] names = {"W-", "W+", "H-", "H+", "LƯU"};
+              for (int k = 0; k < 5; k++) {
+                final int kk = k;
+                Button b = new Button(this);
+                b.setText(names[k]);
+                b.setOnClickListener(new View.OnClickListener() {
+                  @Override public void onClick(View v) {
+                    if (kk == 0) g[2] -= 1;
+                    else if (kk == 1) g[2] += 1;
+                    else if (kk == 2) g[3] -= 1;
+                    else if (kk == 3) g[3] += 1;
+                    else { saveCalib(); return; }
+                    gv.invalidate();
+                  }
+                });
+                bar.addView(b, new LinearLayout.LayoutParams(0, -2, 1));
+              }
+              FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(-1, -2);
+              bl.gravity = Gravity.BOTTOM;
+              calib.addView(bar, bl);
+              WindowManager.LayoutParams lp = new WindowManager.LayoutParams(-1, -1,
+                  WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                  WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                      | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                  PixelFormat.TRANSLUCENT);
+              if (Build.VERSION.SDK_INT >= 28)
+                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+              wm.addView(calib, lp);
+            }
+
+            void saveCalib() {
+              sp.edit().putFloat("x0", g[0]).putFloat("y0", g[1]).putFloat("sx", g[2]).putFloat("sy", g[3]).apply();
+              wm.removeView(calib);
+              calib = null;
+              last = null;
+              recog.reset();
+              prevOcc = "";
+              doneOcc = "";
+              lastB = null;
+              calibrating = false;
+              say("Đang chờ…", "Chạm: tính lại · Giữ: căn lại lưới");
+              bg.removeCallbacks(loop);
+              bg.postDelayed(loop, 1200);
+            }
+
+            // ---------- Vòng lặp đọc bàn cờ ----------
+            final Runnable loop = new Runnable() {
+              @Override public void run() {
+                if (!running) return;
+                try { tick(); } catch (Throwable t) { say("Lỗi", String.valueOf(t)); }
+                bg.postDelayed(this, 700);
+              }
+            };
+
+            Bitmap toBmp(Image img) {
+              Image.Plane pl = img.getPlanes()[0];
+              ByteBuffer buf = pl.getBuffer();
+              int w = pl.getRowStride() / pl.getPixelStride();
+              Bitmap bm = Bitmap.createBitmap(w, img.getHeight(), Bitmap.Config.ARGB_8888);
+              bm.copyPixelsFromBuffer(buf);
+              if (w != img.getWidth()) {
+                Bitmap c = Bitmap.createBitmap(bm, 0, 0, img.getWidth(), img.getHeight());
+                bm.recycle();
+                return c;
+              }
+              return bm;
+            }
+
+            void tick() {
+              if (calibrating) return;
+              Image img = reader.acquireLatestImage();
+              if (img != null) {
+                Bitmap nb = toBmp(img);
+                img.close();
+                last = nb;
+              }
+              Bitmap bm = last;
+              if (bm == null) return;
+              String occ = recog.scan(bm, g);
+              boolean f = force;
+              boolean stable = occ.equals(prevOcc);
+              prevOcc = occ;
+              if (!f && (!stable || occ.equals(doneOcc))) return;
+              force = false;
+              int pieces = 0;
+              for (int i = 0; i < 90; i++) if (recog.occ[i] != 0) pieces++;
+              doneOcc = occ;
+              if (pieces < 2) { say("Chưa thấy bàn cờ", "Giữ bong bóng để căn lại lưới"); return; }
+              int[] B = recog.classify(bm, g, f);
+              if (recog.unknown > 0) {
+                say("Không đọc được " + recog.unknown + " quân", "Chạm bong bóng để thử lại." + recog.unknownAt);
+                return;
+              }
+              int kM = 0, kO = 0;
+              for (int p : B) { if (p == 1) kM++; if (p == -1) kO++; }
+              if (kM != 1 || kO != 1) {
+                say("Thiếu Tướng/Soái", "Kiểm tra căn lưới (giữ bong bóng) hoặc chạm để đọc lại");
+                return;
+              }
+              boolean mine = true;
+              if (!f && lastB != null) {
+                int vac = 0, mover = 0;
+                for (int i = 0; i < 90; i++) if (B[i] == 0 && lastB[i] != 0) { vac++; mover = lastB[i]; }
+                if (vac == 1) mine = mover < 0;   // quân đối thủ vừa đi -> tới lượt mình
+              }
+              lastB = B;
+              if (!mine) { say("Đối thủ đang đi…", null); return; }
+              say("Đang tính nước đi…", null);
+              int[] r = eng.best(B, 2500);
+              if (r == null) { say("Hết nước đi", "Ván cờ đã kết thúc?"); return; }
+              String chk = eng.gives(B, r[0]) ? " · CHIẾU!" : "";
+              say("▶ " + Notation.viet(B, r[0]), Notation.sq(B, r[0]) + chk + "\n(độ sâu " + r[2] + ")");
+            }
+
+            @Override public void onDestroy() {
+              running = false;
+              try { if (bubble != null) wm.removeView(bubble); } catch (Exception e) { }
+              try { if (calib != null) wm.removeView(calib); } catch (Exception e) { }
+              try { if (vd != null) vd.release(); } catch (Exception e) { }
+              try { if (reader != null) reader.close(); } catch (Exception e) { }
+              try { if (proj != null) proj.stop(); } catch (Exception e) { }
+              if (ht != null) ht.quitSafely();
+              super.onDestroy();
+            }
+          }
+          EOF
+
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CoTuongHelper-APK
+          path: app/build/outputs/apk/debug/app-debug.apk

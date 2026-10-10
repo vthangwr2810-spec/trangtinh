@@ -9,7 +9,12 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      # Phien ban da kiem chung chay cung nhau (Pikafish + mang NNUE). Doi ca hai cung luc khi muon nang cap.
+      PIKAFISH_COMMIT: 1c66b9b21cf2f280ce3b3ffa80c1c6609f2b29ff
+      NNUE_SHA256: 6b74ac7bbd299dc26a17803135b616eda9248bef0cbfc7b811bfcf981832ba29
+      NNUE_URL: https://github.com/official-pikafish/Networks/releases/download/master-net/pikafish.nnue
     steps:
       - uses: actions/setup-java@v4
         with:
@@ -750,6 +755,83 @@ jobs:
               return best;
             }
 
+            // ---------- Tự căn lưới từ thế xuất phát ----------
+            static final int[] START_CELLS = new int[32];
+            static {
+              int n = 0;
+              for (int c = 0; c < 9; c++) { START_CELLS[n++] = c; START_CELLS[n++] = 81 + c; }
+              START_CELLS[n++] = 19; START_CELLS[n++] = 25; START_CELLS[n++] = 64; START_CELLS[n++] = 70;
+              for (int c = 0; c < 9; c += 2) { START_CELLS[n++] = 27 + c; START_CELLS[n++] = 54 + c; }
+            }
+
+            // Tỉ lệ điểm trên vòng viền (bán kính f*st) có màu tối, cho lệch +-tol px; lấy vòng tốt nhất trong [f0, f1]
+            float ringAt(float cx, float cy, float st, int tol, float f0, float f1, float df, int step) {
+              int w = pw, h = ph;
+              float best = 0;
+              for (float f = f0; f <= f1 + 0.001f; f += df) {
+                int d = 0, t = 0;
+                for (int k = 0; k < 48; k += step) {
+                  float x0 = cx + (float) CA[k] * f * st, y0 = cy + (float) SA[k] * f * st;
+                  if (x0 < tol + 1 || y0 < tol + 1 || x0 >= w - tol - 2 || y0 >= h - tol - 2) continue;
+                  t++;
+                  for (int o = -tol; o <= tol; o++) {
+                    int x = Math.round(x0 + (float) CA[k] * o), y = Math.round(y0 + (float) SA[k] * o);
+                    if (lum(pix[y * w + x]) < 125) { d++; break; }
+                  }
+                }
+                if (t > 48 / step / 2) best = Math.max(best, (float) d / t);
+              }
+              return best;
+            }
+
+            float fitScore(float x0, float y0, float sx, float sy, int tol, float f0, float f1, float df, int step) {
+              float s = 0;
+              for (int k = 0; k < 32; k++) {
+                int i = START_CELLS[k];
+                s += ringAt(x0 + (i % 9) * sx, y0 + (i / 9) * sy, sx, tol, f0, f1, df, step);
+              }
+              return s / 32f;
+            }
+
+            // Tìm lưới {x0, y0, bước ngang, bước dọc} làm 32 vòng quân của thế xuất phát khớp nhất, tìm quanh lưới g0
+            // (dịch tới +-30 px, đổi cỡ ô tới +-6 px). Trả về null nếu không thấy thế xuất phát (giữa ván, hoặc không phải bàn cờ).
+            float[] fitStart(Bitmap bm, float[] g0) {
+              grabPixels(bm);
+              float ratio = g0[3] / g0[2];
+              // Vòng 1: thô
+              float[] b = null;
+              float bs = -1;
+              for (int ds = -6; ds <= 6; ds += 3)
+                for (int dx = -30; dx <= 30; dx += 6)
+                  for (int dy = -30; dy <= 30; dy += 6) {
+                    float sx = g0[2] + ds;
+                    float s = fitScore(g0[0] + dx, g0[1] + dy, sx, sx * ratio, 4, 0.36f, 0.40f, 0.02f, 2);
+                    if (s > bs) { bs = s; b = new float[]{g0[0] + dx, g0[1] + dy, sx, sx * ratio}; }
+                  }
+              // Vòng 2: mịn quanh kết quả vòng 1
+              float[] c = b;
+              bs = -1;
+              for (int ds = -3; ds <= 3; ds++)
+                for (int dt = -3; dt <= 3; dt++)
+                  for (int dx = -6; dx <= 6; dx += 2)
+                    for (int dy = -6; dy <= 6; dy += 2) {
+                      float s = fitScore(c[0] + dx, c[1] + dy, c[2] + ds, c[3] + dt, 2, 0.34f, 0.42f, 0.02f, 2);
+                      if (s > bs) { bs = s; b = new float[]{c[0] + dx, c[1] + dy, c[2] + ds, c[3] + dt}; }
+                    }
+              if (bs < 0.85f) return null;
+              // Vòng 3: tinh chỉnh từng px
+              c = b;
+              float bs3 = -1;
+              for (int ds = -2; ds <= 2; ds++)
+                for (int dt = -2; dt <= 2; dt++)
+                  for (int dx = -4; dx <= 4; dx++)
+                    for (int dy = -4; dy <= 4; dy++) {
+                      float s = fitScore(c[0] + dx, c[1] + dy, c[2] + ds, c[3] + dt, 1, 0.34f, 0.42f, 0.02f, 2);
+                      if (s > bs3) { bs3 = s; b = new float[]{c[0] + dx, c[1] + dy, c[2] + ds, c[3] + dt}; }
+                    }
+              return b;
+            }
+
             boolean isRed(Bitmap bm, float cx, float cy, float st) {
               int r = 0, d = 0, w = bm.getWidth(), h = bm.getHeight();
               for (int a = -8; a <= 8; a++) for (int b = -8; b <= 8; b++) {
@@ -1168,7 +1250,7 @@ jobs:
               t.setText("TRỢ LÝ CỜ TƯỚNG\n\n"
                   + "1. Bấm nút 1 để cấp quyền hiển thị bong bóng.\n"
                   + "2. Mở game, vào ván cờ. Quay lại đây bấm nút 2, chọn cho phép ghi toàn màn hình (Bắt đầu ngay).\n"
-                  + "3. Quay lại game: lưới xanh hiện lên. Kéo lưới cho các vòng vàng khớp quân cờ (W/H chỉnh độ rộng/cao ô), bấm LƯU.\n"
+                  + "3. Quay lại game: lưới xanh hiện lên. Nếu bàn cờ đang ở thế xuất phát thì cứ bấm LƯU, khi bấm \"Ván mới\" app tự căn lưới cho khớp. Nếu vẫn lệch hoặc đang giữa ván thì kéo lưới cho các vòng vàng khớp quân cờ (W/H chỉnh độ rộng/cao ô), bấm LƯU.\n"
                   + "4. Bấm nút đỏ \"↻ Ván mới\" lúc bàn cờ đang ở thế xuất phát. Tới lượt bạn, bong bóng ghi nước đi, ví dụ \"Pháo 8 bình 5\".\n"
                   + "5. Bạn đi xong thì bấm nút xanh \"⏱ Đối thủ đi\". App tự đợi tới khi đối thủ đi xong (bàn cờ đổi và đứng yên) rồi mới tính nước tiếp theo, không bị lộn nước.\n\n"
                   + "App chỉ đọc chữ trên quân một lần lúc bắt đầu; sau đó theo dõi từng nước đi nên không còn lỗi đọc nhầm quân giữa ván. Bạn đi khác gợi ý cũng được.\n\n"
@@ -1757,10 +1839,32 @@ jobs:
               suggest();
             }
 
+            int countOcc() {
+              int n = 0;
+              for (int i = 0; i < 90; i++) if (recog.occ[i] != 0) n++;
+              return n;
+            }
+
+            // Màn hình đang ở thế xuất phát nhưng lưới lệch: tự tìm lưới khớp rồi lưu lại. Trả về true nếu đã đổi lưới.
+            boolean autoFit(Bitmap bm) {
+              float[] r = recog.fitStart(bm, g);
+              if (r == null) return false;
+              boolean changed = false;
+              for (int k = 0; k < 4; k++) if (Math.abs(r[k] - g[k]) > 1.5f) changed = true;
+              if (!changed) return false;
+              System.arraycopy(r, 0, g, 0, 4);
+              sp.edit().putFloat("x0", g[0]).putFloat("y0", g[1]).putFloat("sx", g[2]).putFloat("sy", g[3]).apply();
+              recog.reset();
+              recog.scan(bm, g);
+              return true;
+            }
+
             // Đọc bàn cờ từ màn hình (đọc chữ trên quân). Thế xuất phát thì khỏi đọc chữ. Trả về false nếu đọc không ổn.
             void fullRead(Bitmap bm) {
-              int pieces = 0;
-              for (int i = 0; i < 90; i++) if (recog.occ[i] != 0) pieces++;
+              // Không phải thế xuất phát đọc được: thử tự căn lưới (nếu màn hình đang là thế xuất phát nhưng lưới lệch)
+              boolean fitted = false;
+              if (!Track.isStartOcc(recog.occ.clone(), recog.mineOcc)) fitted = autoFit(bm);
+              int pieces = countOcc();
               if (pieces < 2) { say("Chưa thấy bàn cờ", "Giữ bong bóng để căn lại lưới"); return; }
               mineC = recog.mineOcc;
               int[] o = recog.occ.clone();
@@ -1769,7 +1873,7 @@ jobs:
               if (B == null) return;
               cur = B;
               turnMine = !(start && mineC == 2);   // mình cầm đen thì đỏ đi trước
-              lastNote = "";
+              lastNote = fitted ? "Đã tự căn lưới" : "";
               if (!turnMine) {
                 prevOcc = ""; stableN = 0; miss = 0;
                 waiting = true;
@@ -1982,7 +2086,45 @@ jobs:
           }
           EOF
 
+      # ---- Mang NNUE: da ghim bang SHA256, cache theo SHA256 (lan sau khong tai lai) ----
+      - name: Cache mang NNUE
+        id: nnuecache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/pikafish.nnue
+          key: nnue-${{ env.NNUE_SHA256 }}
+
+      - name: Tai mang NNUE cua Pikafish (BAT BUOC - thieu file nay engine se tu thoat)
+        if: steps.nnuecache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          mkdir -p app/src/main/assets
+          curl -fL --retry 3 --max-time 900 -o app/src/main/assets/pikafish.nnue "$NNUE_URL"
+
+      - name: Kiem tra mang NNUE dung ban da ghim
+        run: |
+          set -e
+          F=app/src/main/assets/pikafish.nnue
+          test -f "$F"
+          GOT=$(sha256sum "$F" | cut -d' ' -f1)
+          echo "NNUE size: $(stat -c %s "$F")  sha256: $GOT"
+          test "$(stat -c %s "$F")" -gt 10000000
+          if [ "$GOT" != "$NNUE_SHA256" ]; then
+            echo "LOI: mang NNUE tren GitHub da bi thay doi (sha256 khong khop ban da kiem chung)."
+            echo "Can cap nhat dong thoi PIKAFISH_COMMIT va NNUE_SHA256 o dau file nay."
+            exit 1
+          fi
+
+      # ---- Pikafish: ghim commit, cache ban da bien dich ----
+      - name: Cache Pikafish da bien dich
+        id: pfcache
+        uses: actions/cache/restore@v4
+        with:
+          path: app/src/main/jniLibs/arm64-v8a
+          key: pikafish-bin-${{ env.PIKAFISH_COMMIT }}-v1
+
       - name: Build Pikafish (engine manh nhat)
+        if: steps.pfcache.outputs.cache-hit != 'true'
         continue-on-error: true
         run: |
           set -e
@@ -1991,10 +2133,17 @@ jobs:
           TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
           export PATH="$TC:$PATH"
           which aarch64-linux-android21-clang++
-          git clone --depth 1 https://github.com/official-pikafish/Pikafish.git /tmp/pikafish
+          mkdir /tmp/pikafish && cd /tmp/pikafish
+          git init -q
+          git remote add origin https://github.com/official-pikafish/Pikafish.git
+          git fetch --depth 1 origin "$PIKAFISH_COMMIT"
+          git checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$PIKAFISH_COMMIT"
           OUTD="$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a"
           mkdir -p "$OUTD"
-          cd /tmp/pikafish/src
+          cd src
+          # Dua san mang da kiem chung vao src/ de Makefile khong tu tai ban "master" khac
+          cp "$GITHUB_WORKSPACE/app/src/main/assets/pikafish.nnue" pikafish.nnue
           make -j"$(nproc)" build ARCH=armv8 COMP=ndk EXTRALDFLAGS="-Wl,-z,max-page-size=16384"
           "$TC/llvm-strip" pikafish
           cp pikafish "$OUTD/libpikafish.so"
@@ -2007,14 +2156,12 @@ jobs:
           fi
           ls -l "$OUTD"
 
-      - name: Tai mang NNUE cua Pikafish (BAT BUOC - thieu file nay engine se tu thoat)
-        run: |
-          set -e
-          mkdir -p app/src/main/assets
-          curl -fL --retry 3 --max-time 900 -o app/src/main/assets/pikafish.nnue https://github.com/official-pikafish/Networks/releases/download/master-net/pikafish.nnue
-          SZ=$(stat -c %s app/src/main/assets/pikafish.nnue)
-          echo "NNUE size: $SZ"
-          test "$SZ" -gt 10000000
+      - name: Luu cache Pikafish (chi khi du ca 2 ban)
+        if: steps.pfcache.outputs.cache-hit != 'true' && hashFiles('app/src/main/jniLibs/arm64-v8a/libpikafish.so') != '' && hashFiles('app/src/main/jniLibs/arm64-v8a/libpikafish_dp.so') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: app/src/main/jniLibs/arm64-v8a
+          key: pikafish-bin-${{ env.PIKAFISH_COMMIT }}-v1
 
       - name: Kiem tra engine da duoc build
         run: |

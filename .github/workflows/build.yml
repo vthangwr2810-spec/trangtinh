@@ -933,6 +933,9 @@ jobs:
             String name = "";
             volatile String err = "";
             String nnue = "";
+            volatile boolean pondering, searching;   // pondering: đang nghĩ trước; searching: đang có tìm kiếm chính
+            long ponderT0;
+            int curThreads = 1, maxThreads = 1;
 
             static boolean hasDotprod() {
               try (BufferedReader br = new BufferedReader(new FileReader("/proc/cpuinfo"))) {
@@ -981,6 +984,8 @@ jobs:
               send("setoption name EvalFile value " + nnue);
               int th = Math.min(8, Math.max(1, Runtime.getRuntime().availableProcessors()));
               send("setoption name Threads value " + th);
+              curThreads = th;
+              maxThreads = th;
               send("setoption name Hash value 128");
               send("isready");
               if (!waitFor("readyok", 40000)) return false;
@@ -1011,15 +1016,31 @@ jobs:
             // Suy nghĩ đủ ms (để so sánh/kiểm tra)
             Res goFull(String fen, int ms) { return go0(fen, ms, false); }
 
-            Res go0(String fen, int ms, boolean early) {
+            Res go0(String fen, int ms, boolean early) { return run(fen, ms, early, false); }
+
+            // Pikafish đã nghĩ sẵn thế này lúc chờ đối thủ: chạy tiếp (dừng sớm theo luật ổn định) thay vì bắt đầu lại từ đầu
+            Res ponderHit(int ms) { return run(null, ms, true, true); }
+
+            Res run(String fen, int ms, boolean early, boolean resume) {
               Res r = new Res();
+              searching = true;
+              boolean done = false;
               try {
-                q.clear();
-                send("position fen " + fen);
-                send("go movetime " + ms);
-                long end = System.currentTimeMillis() + ms + 10000, hard = end + 4000;
+                long t0;
+                if (resume) {
+                  t0 = ponderT0;
+                  pondering = false;
+                } else {
+                  ensureIdle();
+                  setThreads(maxThreads);
+                  q.clear();
+                  send("position fen " + fen);
+                  send("go movetime " + ms);
+                  t0 = System.currentTimeMillis();
+                }
+                long end = resume ? Math.max(t0 + ms, System.currentTimeMillis()) : t0 + ms + 10000;
+                long hard = end + 5000;
                 boolean stopped = false;
-                long t0 = System.currentTimeMillis();
                 String bm = "";
                 int bmDepth = 0, bmCp = 0;
                 while (true) {
@@ -1033,21 +1054,61 @@ jobs:
                   if (l.startsWith("bestmove")) {
                     String[] t = l.split(" ");
                     if (t.length > 1) r.best = t[1];
+                    done = true;
                     break;
                   }
                   if (l.startsWith("info") && l.contains(" pv ") && !l.contains("bound")) {
-                  info(l, r);
-                  if (early && !stopped && r.pv.length > 0) {
-                    if (!r.pv[0].equals(bm)) { bm = r.pv[0]; bmDepth = r.depth; bmCp = r.cp; }
-                    boolean proven = r.mate && r.mateIn > 0 && r.depth >= 2 * r.mateIn + 1;
-                    boolean stable = !r.mate && r.depth >= 14 && r.depth - bmDepth >= 6 && Math.abs(r.cp - bmCp) <= 30
-                        && System.currentTimeMillis() - t0 >= 2000;
-                    if (proven || stable) { send("stop"); stopped = true; }
+                    info(l, r);
+                    if (early && !stopped && r.pv.length > 0) {
+                      if (!r.pv[0].equals(bm)) { bm = r.pv[0]; bmDepth = r.depth; bmCp = r.cp; }
+                      boolean proven = r.mate && r.mateIn > 0 && r.depth >= 2 * r.mateIn + 1;
+                      boolean stable = !r.mate && r.depth >= 14 && r.depth - bmDepth >= 6 && Math.abs(r.cp - bmCp) <= 30
+                          && System.currentTimeMillis() - t0 >= 2000;
+                      if (proven || stable) { send("stop"); stopped = true; }
+                    }
                   }
                 }
+              } catch (Throwable t) { ready = false; }
+              finally { searching = false; }
+              if (!done) ready = false;   // engine không trả bestmove: coi như treo, lần sau tự khởi động lại
+              return r;
+            }
+
+            // Dừng ponder đang chạy (nếu có) và đọc hết kết quả của nó, để lệnh sau không bị lẫn
+            void ensureIdle() {
+              if (!pondering) return;
+              try {
+                send("stop");
+                long end = System.currentTimeMillis() + 5000;
+                while (System.currentTimeMillis() < end) {
+                  String l = q.poll(200, TimeUnit.MILLISECONDS);
+                  if (l == null) continue;
+                  if (l.equals("#eof")) { ready = false; break; }
+                  if (l.startsWith("bestmove")) break;
                 }
               } catch (Throwable t) { ready = false; }
-              return r;
+              pondering = false;
+            }
+
+            void setThreads(int n) throws Exception {
+              if (n == curThreads) return;
+              send("setoption name Threads value " + n);
+              curThreads = n;
+            }
+
+            // Nghĩ trước thế fen (tối đa ms); dùng đủ luồng để khi đối thủ đi nhanh vẫn có kết quả sớm như tìm kiếm thường
+            boolean ponderStart(String fen, int ms) {
+              if (!ready || searching) return false;
+              try {
+                ensureIdle();
+                q.clear();
+                setThreads(maxThreads);
+                send("position fen " + fen);
+                send("go movetime " + ms);
+                ponderT0 = System.currentTimeMillis();
+                pondering = true;
+                return true;
+              } catch (Throwable t) { ready = false; return false; }
             }
 
             void info(String l, Res r) {
@@ -1070,7 +1131,10 @@ jobs:
             // Giải thế: như go nhưng dừng sớm khi đã chứng minh chiếu hết, và báo tiến độ ~1,5 giây một lần
             Res solve(String fen, int ms, Prog prog) {
               Res r = new Res();
+              searching = true;
               try {
+                ensureIdle();
+                setThreads(maxThreads);
                 q.clear();
                 send("position fen " + fen);
                 send("go movetime " + ms);
@@ -1096,14 +1160,17 @@ jobs:
                   }
                 }
               } catch (Throwable t) { ready = false; }
+              finally { searching = false; }
               return r;
             }
 
+            // Chỉ dừng tìm kiếm chính; ponder (nghĩ trước) vẫn chạy tiếp
             void abort() {
-              try { if (ready && os != null) send("stop"); } catch (Throwable t) { }
+              try { if (ready && os != null && searching) send("stop"); } catch (Throwable t) { }
             }
 
             void newGame() throws Exception {
+              ensureIdle();
               send("ucinewgame");
               send("isready");
               waitFor("readyok", 10000);
@@ -1255,6 +1322,7 @@ jobs:
                   + "5. Bạn đi xong thì bấm nút xanh \"⏱ Đối thủ đi\". App tự đợi tới khi đối thủ đi xong (bàn cờ đổi và đứng yên) rồi mới tính nước tiếp theo, không bị lộn nước.\n\n"
                   + "App chỉ đọc chữ trên quân một lần lúc bắt đầu; sau đó theo dõi từng nước đi nên không còn lỗi đọc nhầm quân giữa ván. Bạn đi khác gợi ý cũng được.\n\n"
                   + "Chạm bong bóng: đọc lại cả bàn cờ (dùng khi vào giữa ván hoặc bị lệch). Giữ bong bóng: căn lại lưới. Kéo bong bóng/nút: đổi chỗ (đừng để che bàn cờ).\n"
+                                      + "MŨI TÊN: nước gợi ý được vẽ bằng mũi tên xanh lá trên bàn cờ, tự ẩn khi bạn bấm nút xanh. Lúc chờ đối thủ, Pikafish nghĩ trước thế sau nước dự kiến; nếu đối thủ đi đúng như dự đoán thì gợi ý hiện gần như ngay (bong bóng ghi \"đã nghĩ trước\").\n\n"
                             + "GIẢI THẾ CỜ: mở thế cờ trong game, bấm nút xanh lá \"🧩 Giải thế\" (bên dưới đi trước). Giữ nút này để giải cho bên trên đi trước. App đọc thế, tìm đường chiếu hết và ghi cả biến chính. Không cần bấm Ván mới.\n\n"
                             + "Bàn cờ phải nằm trọn trên màn hình, quân của bạn ở phía dưới.\n");
               l.addView(t);
@@ -1366,8 +1434,12 @@ jobs:
             Uci uci;
             static final int THINK_MS = 8000;
             static final int SOLVE_MS = 30000;
+            static final int PONDER_MS = 12000;
             volatile String engNote = "Đang nạp Pikafish…";
             TextView rbtn, ebtn, sbtn;
+            ArrowView arrow;                 // mũi tên gợi ý trên bàn cờ
+            volatile long arrowHiddenAt;     // lúc ẩn mũi tên gần nhất (để chờ hình màn hình cập nhật trước khi quét)
+            int[] ponderBoard;               // thế Pikafish đang nghĩ trước (sau nước ta + nước đối thủ dự đoán)
             int[] cur;                       // bàn cờ đang theo dõi (quân mình > 0, ở dưới)
             boolean turnMine = true;         // đang tới lượt mình?
             int mineC = 1;                   // màu của mình trên màn hình: 1 đỏ, 2 đen
@@ -1525,7 +1597,7 @@ jobs:
                     case MotionEvent.ACTION_UP:
                       if (!moved) {
                         if (System.currentTimeMillis() - t0 > 600) showCalib();
-                        else { cancel = true; if (uci != null) uci.abort(); force = true; say("Đang đọc lại bàn cờ…", null); }
+                        else { hideArrow(); cancel = true; if (uci != null) uci.abort(); force = true; say("Đang đọc lại bàn cờ…", null); }
                       }
                       return true;
                   }
@@ -1607,6 +1679,7 @@ jobs:
                 say("Chưa có bàn cờ", "Bấm \"↻ Ván mới\" (hoặc chạm bong bóng) để đọc bàn cờ trước");
                 return;
               }
+              hideArrow();
               cancel = true;
               if (uci != null) uci.abort();
               prevOcc = ""; stableN = 0; miss = 0;
@@ -1622,6 +1695,8 @@ jobs:
               waiting = false;
               setWaitBtn(false);
               if (uci != null) uci.abort();
+              hideArrow();
+              ponderBoard = null;
               say("Ván mới…", "Đang đặt lại");
               bg.post(new Runnable() {
                 @Override public void run() {
@@ -1759,6 +1834,8 @@ jobs:
               recog.reset();
               prevOcc = "";
               cur = null;
+              ponderBoard = null;
+              hideArrow();
               waiting = false;
               setWaitBtn(false);
               calibrating = false;
@@ -1794,6 +1871,7 @@ jobs:
             void tick() {
               if (calibrating) return;
               if (!force && !waiting) return;
+              settleArrow();
               Image img = reader.acquireLatestImage();
               if (img != null) {
                 Bitmap nb = toBmp(img);
@@ -1933,7 +2011,15 @@ jobs:
               say("Đang tính nước đi…", lastNote.isEmpty() ? null : lastNote);
               int[] r;
               String tag = "Engine dự phòng ✗ " + (uci != null ? uci.err : "");
-              Uci.Res pr = (uci != null && uci.ready) ? uci.go(Uci.fen(B), THINK_MS) : null;
+              Uci.Res pr = null;
+              boolean hit = false;
+              if (uci != null && uci.ready) {
+                // Pikafish đã nghĩ trước đúng thế này (đối thủ đi như dự đoán) thì lấy luôn kết quả
+                hit = ponderBoard != null && uci.pondering && java.util.Arrays.equals(ponderBoard, B);
+                ponderBoard = null;
+                if (hit) pr = uci.ponderHit(THINK_MS);
+                if (pr == null || pr.best.isEmpty()) { hit = false; pr = uci.go(Uci.fen(B), THINK_MS); }
+              }
               if (cancel) return;   // bạn đã bấm tiếp trong lúc máy nghĩ
               if (pr != null && pr.best.startsWith("(")) { say("Hết nước đi", "Ván cờ đã kết thúc?"); return; }
               if (pr != null && pr.best.length() >= 4) {
@@ -1949,7 +2035,7 @@ jobs:
                   }
                 }
                 r = new int[]{m0, sc0, pr.depth};
-                tag = "Pikafish";
+                tag = hit ? "Pikafish ⚡ đã nghĩ trước" : "Pikafish";
                 engTry = 0;
               } else {
                 r = eng.best(B, 6000);
@@ -1960,6 +2046,102 @@ jobs:
               String head = lastNote.isEmpty() ? "" : lastNote + "\n";
               say("▶ " + Notation.viet(B, r[0]), head + Notation.sq(B, r[0]) + chk + "\n" + eng.verdict(r[1]) + " · sâu " + r[2] + " · " + tag + "\nDự kiến: " + eng.line(B, 5)
                   + "\nĐi xong bấm nút xanh \"Đối thủ đi\"");
+              showArrow(r[0] >> 8, r[0] & 255);
+              if (pr != null && pr.best.length() >= 4) startPonder(B, pr);
+            }
+
+            // Đoán nước đối thủ (nước thứ 2 trong biến chính) và cho Pikafish nghĩ sẵn thế sau đó trong lúc bạn đi và đối thủ nghĩ
+            void startPonder(int[] B, Uci.Res pr) {
+              ponderBoard = null;
+              try {
+                if (uci == null || !uci.ready || cancel) return;
+                if (pr.pv.length < 2 || !pr.pv[0].equals(pr.best) || pr.pv[1].length() < 4) return;
+                if (pr.mate && pr.mateIn > 0 && pr.mateIn <= 2) return;   // sắp chiếu hết: không cần
+                int mx = Uci.parse(pr.best), my = Uci.parse(pr.pv[1]);
+                int[] B2 = B.clone();
+                if (B2[mx >> 8] <= 0) return;
+                Track.apply(B2, mx);
+                if (B2[my >> 8] >= 0) return;
+                Track.apply(B2, my);
+                if (uci.ponderStart(Uci.fen(B2, true), PONDER_MS)) ponderBoard = B2;
+              } catch (Throwable t) { ponderBoard = null; }
+            }
+
+            // ---------- Mũi tên gợi ý ----------
+            class ArrowView extends View {
+              final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              final int[] loc = new int[2];
+              int from = -1, to = -1;
+              ArrowView(Context c) { super(c); }
+              @Override protected void onDraw(Canvas c) {
+                if (from < 0 || to < 0) return;
+                getLocationOnScreen(loc);
+                float ox = loc[0], oy = loc[1];
+                float fx = g[0] + (from % 9) * g[2] - ox, fy = g[1] + (from / 9) * g[3] - oy;
+                float tx = g[0] + (to % 9) * g[2] - ox, ty = g[1] + (to / 9) * g[3] - oy;
+                float r = 0.40f * g[2];
+                double a = Math.atan2(ty - fy, tx - fx);
+                float ux = (float) Math.cos(a), uy = (float) Math.sin(a);
+                p.setStrokeCap(Paint.Cap.ROUND);
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(g[2] * 0.07f);
+                p.setColor(0xFF00E676);
+                c.drawCircle(fx, fy, r, p);                 // ô quân đi
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(0x6600E676);
+                c.drawCircle(tx, ty, r, p);                 // ô đến
+                p.setStyle(Paint.Style.STROKE);
+                p.setColor(0xFF00E676);
+                c.drawCircle(tx, ty, r, p);
+                float sx = fx + ux * r, sy = fy + uy * r, ex = tx - ux * r, ey = ty - uy * r;
+                if ((ex - sx) * ux + (ey - sy) * uy > g[2] * 0.1f) {
+                  p.setStrokeWidth(g[2] * 0.09f);
+                  c.drawLine(sx, sy, ex, ey, p);
+                  float hl = g[2] * 0.30f;
+                  for (int k = -1; k <= 1; k += 2) {
+                    double b = a + Math.PI + k * 0.5;
+                    c.drawLine(ex, ey, ex + (float) Math.cos(b) * hl, ey + (float) Math.sin(b) * hl, p);
+                  }
+                }
+              }
+            }
+
+            void showArrow(final int from, final int to) {
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  try {
+                    if (arrow == null) {
+                      arrow = new ArrowView(CaptureService.this);
+                      WindowManager.LayoutParams alp = new WindowManager.LayoutParams(-1, -1,
+                          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                              | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                          PixelFormat.TRANSLUCENT);
+                      if (Build.VERSION.SDK_INT >= 28)
+                        alp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                      wm.addView(arrow, alp);
+                    }
+                    arrow.from = from;
+                    arrow.to = to;
+                    arrow.setVisibility(View.VISIBLE);
+                    arrow.invalidate();
+                  } catch (Throwable t) { }
+                }
+              });
+            }
+
+            // Mũi tên nằm trong hình chụp màn hình nên phải ẩn trước khi quét bàn cờ
+            void hideArrow() {
+              arrowHiddenAt = System.currentTimeMillis();
+              ui.post(new Runnable() {
+                @Override public void run() { if (arrow != null) arrow.setVisibility(View.INVISIBLE); }
+              });
+            }
+
+            // Chờ hình màn hình cập nhật sau khi ẩn mũi tên rồi mới quét
+            void settleArrow() {
+              long w = 450 - (System.currentTimeMillis() - arrowHiddenAt);
+              if (w > 0) try { Thread.sleep(w); } catch (InterruptedException e) { }
             }
 
             // ---------- Giải thế cờ ----------
@@ -1981,6 +2163,8 @@ jobs:
               waiting = false;
               setWaitBtn(false);
               if (uci != null) uci.abort();
+              hideArrow();
+              ponderBoard = null;
               say("Giải thế cờ…", "Đang đọc bàn cờ");
               bg.post(new Runnable() {
                 @Override public void run() {
@@ -1992,6 +2176,7 @@ jobs:
             void doSolve(boolean mineMoves) {
               cancel = false;
               force = false;
+              settleArrow();
               Bitmap bm = grab();
               if (bm == null) { say("Chưa có hình màn hình", "Đợi 1 giây rồi bấm lại"); return; }
               recog.scan(bm, g);
@@ -2032,6 +2217,8 @@ jobs:
               int[] r = eng.best(sb, 20000);
               if (cancel) return;
               if (r == null) { say("Không có nước đi", "Thế này đã hết cờ?"); return; }
+              int mv = mineMoves ? r[0] : Engine.fm(r[0]);
+              showArrow(mv >> 8, mv & 255);
               say("🧩 " + eng.verdict(r[1]), (mineMoves ? "Bên dưới" : "Bên trên") + " đi trước · sâu " + r[2] + "\n▶ " + Notation.viet(sb, r[0])
                   + "\n" + eng.line(sb, 12) + "\nEngine dự phòng (Pikafish chưa chạy)");
             }
@@ -2043,6 +2230,7 @@ jobs:
               else title = "🧩 Chưa thấy chiếu hết · " + eng.verdict(pr.cp);
               String[] pv = (pr.pv.length > 0 && pr.pv[0].equals(pr.best)) ? pr.pv : new String[]{pr.best};
               int m0 = Uci.parse(pr.best);
+              showArrow(m0 >> 8, m0 & 255);
               String first = mineMoves ? Notation.viet(B, m0) : Notation.viet(Engine.flip(B), Engine.fm(m0));
               String tail = (pr.mate && pr.mateIn > 0) ? "" : "\n(Thế hòa hoặc cần tính sâu hơn)";
               say(title, (mineMoves ? "Bên dưới" : "Bên trên") + " đi trước · sâu " + pr.depth + "\n▶ " + first + "\n" + pvLine(B, pv, mineMoves, 24) + tail
@@ -2076,6 +2264,7 @@ jobs:
               try { if (rbtn != null) wm.removeView(rbtn); } catch (Exception e) { }
               try { if (ebtn != null) wm.removeView(ebtn); } catch (Exception e) { }
               try { if (sbtn != null) wm.removeView(sbtn); } catch (Exception e) { }
+              try { if (arrow != null) wm.removeView(arrow); } catch (Exception e) { }
               try { if (vd != null) vd.release(); } catch (Exception e) { }
               try { if (reader != null) reader.close(); } catch (Exception e) { }
               try { if (proj != null) proj.stop(); } catch (Exception e) { }

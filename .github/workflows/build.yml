@@ -710,13 +710,26 @@ jobs:
               for (int i = 0; i < 90; i++) {
                 float cx = g[0] + (i % 9) * g[2], cy = g[1] + (i / 9) * g[3];
                 int o = 0;
-                if (ringDark(bm, cx, cy, g[2]) > 0.6f) o = isRed(bm, cx, cy, g[2]) ? 1 : 2;
+                if (ringDark(bm, cx, cy, g[2]) > 0.6f && faceOk(cx, cy, g[2])) o = isRed(bm, cx, cy, g[2]) ? 1 : 2;
                 occ[i] = o;
                 sb.append(o);
                 if (i / 9 >= 7 && o > 0) cnt[o]++;
               }
               mineOcc = cnt[1] >= cnt[2] ? 1 : 2;   // màu đa số ở nửa dưới = quân của mình
               return sb.toString();
+            }
+
+            // Mặt quân phải sáng (kem/trắng). Ô trống ở góc bàn (đường kẻ + viền bàn) có thể "giống" viền quân
+            // nên bị đọc nhầm thành quân; ô đó mặt tối/xám (0% điểm sáng) còn quân thật luôn >= 50%.
+            boolean faceOk(float cx, float cy, float st) {
+              int R = Math.round(0.30f * st), ix = Math.round(cx), iy = Math.round(cy), n = 0, t = 0;
+              for (int y = iy - R; y <= iy + R; y++) for (int x = ix - R; x <= ix + R; x++) {
+                if (x < 0 || y < 0 || x >= pw || y >= ph) continue;
+                if ((x - ix) * (x - ix) + (y - iy) * (y - iy) > R * R) continue;
+                t++;
+                if (lum(pix[y * pw + x]) >= 170) n++;
+              }
+              return t > 0 && n >= t * 0.25f;
             }
 
             // Viền quân của game này nhỏ (bán kính ~0,38 ô) và mảnh; game cũ ~0,45 ô. Dò cả dải 0,32-0,48, mỗi điểm cho lệch ±2 px.

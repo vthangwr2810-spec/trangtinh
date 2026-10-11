@@ -652,7 +652,15 @@ jobs:
 
             // So với mọi mẫu cùng màu; trả về điểm giống nhất và ghi loại quân (1..7) vào lastType
             // Loại quân nào được phép đứng ở ô (rr = hàng tính từ phía mình của quân đó, 9 = hàng cuối nhà; c = cột)
+            // Cờ úp: quân vừa lật có thể nằm ở bất kỳ ô nào (trừ Tướng) nên không lọc theo vùng
+            static volatile boolean relax = false;
+
             static boolean allowed(int t, int rr, int c) {
+              if (relax && t != 1) return true;
+              return std(t, rr, c);
+            }
+
+            static boolean std(int t, int rr, int c) {
               switch (t) {
                 case 1: return rr >= 7 && c >= 3 && c <= 5;
                 case 2: return ((rr == 9 || rr == 7) && (c == 3 || c == 5)) || (rr == 8 && c == 4);
@@ -694,6 +702,7 @@ jobs:
             final int[] cachedOcc = new int[90];
             final int[] sig = new int[90 * SG];
             final boolean[] ok = new boolean[90];
+            final boolean[] blank = new boolean[90];   // quân úp: mặt trống, không có chữ
             int unknown, mineOcc = 1;
             String unknownAt = "";
 
@@ -712,6 +721,7 @@ jobs:
                 int o = 0;
                 if (ringDark(bm, cx, cy, g[2]) > 0.6f && faceOk(cx, cy, g[2])) o = isRed(bm, cx, cy, g[2]) ? 1 : 2;
                 occ[i] = o;
+                blank[i] = o > 0 && inkFrac(cx, cy, g[2]) < 0.04f;
                 sb.append(o);
                 if (i / 9 >= 7 && o > 0) cnt[o]++;
               }
@@ -856,7 +866,65 @@ jobs:
                 // nét chữ đỏ bị răng cưa (tối, ngả đỏ) không được tính là nét đen
                 if (red(p)) r++; else if (lum(p) < 90 && pr - pg <= 30) d++;
               }
+              if (r + d < 6) return ringRed(cx, cy, st);   // quân úp (mặt trống): xác định màu theo viền quân
               return r > d;
+            }
+
+            // Tỉ lệ điểm ảnh "có mực" (chữ đỏ hoặc tối) trong vùng mặt quân; quân úp ~0, quân lộ chữ ~0,35
+            float inkFrac(float cx, float cy, float st) {
+              int R = Math.round(0.28f * st), ix = Math.round(cx), iy = Math.round(cy), n = 0, t = 0;
+              for (int y = iy - R; y <= iy + R; y++) for (int x = ix - R; x <= ix + R; x++) {
+                if (x < 0 || y < 0 || x >= pw || y >= ph) continue;
+                if ((x - ix) * (x - ix) + (y - iy) * (y - iy) > R * R) continue;
+                t++;
+                if (Glyph.ink(pix[y * pw + x])) n++;
+              }
+              return t > 0 ? n / (float) t : 0f;
+            }
+
+            // Màu viền quân úp: điểm tối nhất trên mỗi hướng của vòng viền ngả đỏ (R-G lớn) hay xám đen
+            boolean ringRed(float cx, float cy, float st) {
+              int red = 0, blk = 0;
+              for (int k = 0; k < 48; k++) {
+                int bl = 1000, bp = 0;
+                for (float f = 0.34f; f <= 0.461f; f += 0.02f) for (int o = -2; o <= 2; o++) {
+                  int x = Math.round(cx + (float) CA[k] * (f * st + o)), y = Math.round(cy + (float) SA[k] * (f * st + o));
+                  if (x < 0 || y < 0 || x >= pw || y >= ph) continue;
+                  int p = pix[y * pw + x], l = lum(p);
+                  if (l < bl) { bl = l; bp = p; }
+                }
+                if (bl == 1000) continue;
+                if (((bp >> 16) & 255) - ((bp >> 8) & 255) > 35) red++; else blk++;
+              }
+              return red > blk;
+            }
+
+            // Đọc chữ của quân ở ô i (quân vừa lật). Trả về loại quân 1..7, 0 nếu không đọc được. Phải gọi sau scan().
+            int ocrSquare(Bitmap bm, float[] g, int i) {
+              int o = occ[i];
+              if (o == 0) return 0;
+              return ocr(bm, g[0] + (i % 9) * g[2], g[1] + (i / 9) * g[3], g[2], o == 1, o == mineOcc ? i / 9 : 9 - i / 9, i % 9);
+            }
+
+            // Cờ úp: quân mặt trống = úp (±9), quân có chữ = đọc chữ. Quân úp chỉ có thể đứng ở ô xuất phát.
+            int[] classifyDark(Bitmap bm, float[] g) {
+              int[] B = new int[90];
+              unknown = 0;
+              StringBuilder u = new StringBuilder();
+              for (int i = 0; i < 90; i++) {
+                if (occ[i] == 0) continue;
+                int sg = occ[i] == mineOcc ? 1 : -1;
+                int t = 0;
+                if (blank[i]) { if (DarkEngine.POS[i] != 0) t = 9; }
+                else t = ocrSquare(bm, g, i);
+                if (t == 0) {
+                  unknown++;
+                  u.append(" [cột ").append(i % 9 + 1).append(" dòng ").append(i / 9 + 1).append(" từ trên]");
+                  B[i] = sg * 9;
+                } else B[i] = sg * t;
+              }
+              unknownAt = u.toString();
+              return B;
             }
 
             int[] signature(Bitmap bm, float cx, float cy, float st) {
@@ -1302,11 +1370,502 @@ jobs:
             }
           }
           EOF
+          mkdir -p $(dirname app/src/main/java/com/cotuong/helper/DarkEngine.java)
+          cat > app/src/main/java/com/cotuong/helper/DarkEngine.java <<'EOF'
+          package com.cotuong.helper;
+
+          import java.util.Random;
+
+          // Cờ úp: mọi quân (trừ Tướng) bắt đầu úp. Quân úp đi theo loại quân của Ô NÓ ĐANG ĐỨNG; đi xong thì lật, từ đó đi theo đúng loại thật.
+          // Bàn cờ: 90 ô, quân mình (dưới) > 0, đối thủ < 0. 1=Tướng 2=Sĩ 3=Tượng 4=Mã 5=Xe 6=Pháo 7=Tốt. Trong "thế giới giả định" b[] chứa loại thật, hid[] cho biết quân còn úp.
+          // Ngoài thế giới giả định (bàn đang theo dõi): quân úp = ±9, quân vừa lật chờ đọc chữ = ±8.
+          // Tìm nước: lấy mẫu nhiều cách gán loại cho các quân úp (theo số quân chưa lộ), tìm kiếm alpha-beta trong từng thế giới rồi lấy trung bình điểm của mỗi nước (PIMC).
+          class DarkEngine {
+            interface Stopper { boolean stop(); }
+
+            static final int[] POS = new int[90];          // loại quân ứng với ô xuất phát (0 nếu không phải ô xuất phát)
+            static final int[] TOT = {0, 0, 2, 2, 2, 2, 2, 5};
+            static boolean FREE_REVEALED = true;           // Sĩ/Tượng sau khi lật đi tự do (không giới hạn cung/nửa sân)
+            static final int INF = Engine.INF, MATE = Engine.MATE;
+            static final int[] DR = Engine.DR, DC = Engine.DC, XR = Engine.XR, XC = Engine.XC, KR = Engine.KR, KC = Engine.KC, V = Engine.V;
+
+            static {
+              int[] S = Track.startBoard();
+              for (int i = 0; i < 90; i++) POS[i] = Math.abs(S[i]);
+            }
+
+            final int[] b = new int[90];
+            final boolean[] hid = new boolean[90];
+            final int[] ksq = {-1, -1};
+            boolean strict = true;                         // true: quân úp ở ô Sĩ/Tượng bị giới hạn như cờ thường trong nước đầu
+            long deadline;
+            boolean stop;
+            int nodes;
+            Stopper stopper;
+            final int[][] MV = new int[64][160], SC = new int[64][160];
+
+            // ---------- tiện ích ----------
+            // Bàn cờ hiển thị: quân úp / quân chờ đọc thay bằng loại theo ô (để ghi nước đi bằng tiếng Việt)
+            static int[] disp(int[] B) {
+              int[] d = B.clone();
+              for (int i = 0; i < 90; i++) {
+                int p = B[i];
+                if (p == 9 || p == -9) d[i] = (p > 0 ? 1 : -1) * Math.max(1, POS[i]);
+                else if (p == 8 || p == -8) d[i] = (p > 0 ? 1 : -1) * 5;
+              }
+              return d;
+            }
+
+            static boolean anyHidden(int[] B) {
+              for (int p : B) if (p == 9 || p == -9) return true;
+              return false;
+            }
+
+            // Pikafish chỉ đúng luật khi không còn quân úp và Sĩ/Tượng không có quyền đi tự do
+            static boolean stdSafe(int[] B) {
+              if (anyHidden(B)) return false;
+              for (int i = 0; i < 90; i++) {
+                int p = B[i];
+                if (p == 0) continue;
+                int t = Math.abs(p);
+                if (FREE_REVEALED && (t == 2 || t == 3)) return false;
+                if (t >= 1 && t <= 3 && !Glyph.std(t, p > 0 ? i / 9 : 9 - i / 9, i % 9)) return false;
+              }
+              return true;
+            }
+
+            // số quân chưa lộ của mỗi bên: pool[0] = bên mình, pool[1] = đối thủ (chỉ số theo loại quân 2..7)
+            static int[][] poolFromBoard(int[] B) {
+              int[][] pool = new int[2][8];
+              for (int s = 0; s < 2; s++) System.arraycopy(TOT, 0, pool[s], 0, 8);
+              for (int p : B) {
+                int t = Math.abs(p);
+                if (t >= 2 && t <= 7) { int s = p > 0 ? 0 : 1; if (pool[s][t] > 0) pool[s][t]--; }
+              }
+              return pool;
+            }
+
+            static int[][] fullPool() {
+              int[][] pool = new int[2][8];
+              for (int s = 0; s < 2; s++) System.arraycopy(TOT, 0, pool[s], 0, 8);
+              return pool;
+            }
+
+            static int[] darkStart() {
+              int[] S = Track.startBoard();
+              for (int i = 0; i < 90; i++) if (Math.abs(S[i]) > 1) S[i] = S[i] > 0 ? 9 : -9;
+              return S;
+            }
+
+            void load(int[] real, boolean[] h) {
+              ksq[0] = -1; ksq[1] = -1;
+              for (int i = 0; i < 90; i++) {
+                b[i] = real[i]; hid[i] = h[i];
+                if (b[i] == 1) ksq[0] = i; else if (b[i] == -1) ksq[1] = i;
+              }
+            }
+
+            int et(int i) { return hid[i] ? POS[i] : Math.abs(b[i]); }
+
+            int make(int m) {
+              int f = m >> 8, t = m & 255, p = b[f], c = b[t];
+              int info = ((c + 8) & 15) | (hid[f] ? 16 : 0) | (hid[t] ? 32 : 0);
+              if (c == 1) ksq[0] = -1; else if (c == -1) ksq[1] = -1;
+              if (p == 1) ksq[0] = t; else if (p == -1) ksq[1] = t;
+              b[t] = p; b[f] = 0; hid[t] = false; hid[f] = false;
+              return info;
+            }
+
+            void unmake(int m, int info) {
+              int f = m >> 8, t = m & 255, p = b[t], c = (info & 15) - 8;
+              b[f] = p; b[t] = c; hid[f] = (info & 16) != 0; hid[t] = (info & 32) != 0;
+              if (p == 1) ksq[0] = f; else if (p == -1) ksq[1] = f;
+              if (c == 1) ksq[0] = t; else if (c == -1) ksq[1] = t;
+            }
+
+            static boolean pal(int s, int r, int c) { return c >= 3 && c <= 5 && (s > 0 ? r >= 7 && r <= 9 : r >= 0 && r <= 2); }
+
+            int add(int[] mv, int n, int from, int r, int c, int s, boolean co) {
+              int q = b[r * 9 + c];
+              if (q != 0 && (q > 0) == (s > 0)) return n;
+              if (co && q == 0) return n;
+              mv[n] = (from << 8) | (r * 9 + c);
+              return n + 1;
+            }
+
+            int gen(int s, int[] mv, boolean co) {
+              int n = 0;
+              for (int i = 0; i < 90; i++) {
+                int p = b[i];
+                if (p == 0 || (p > 0) != (s > 0)) continue;
+                boolean hd = hid[i];
+                int t = hd ? POS[i] : (p > 0 ? p : -p), r = i / 9, c = i % 9;
+                boolean conf = hd ? strict : !FREE_REVEALED;     // Sĩ/Tượng bị giới hạn vùng?
+                if (t == 1) {
+                  for (int d = 0; d < 4; d++) { int nr = r + DR[d], nc = c + DC[d]; if (pal(s, nr, nc)) n = add(mv, n, i, nr, nc, s, co); }
+                } else if (t == 2) {
+                  for (int d = 0; d < 4; d++) {
+                    int nr = r + XR[d], nc = c + XC[d];
+                    if (nr < 0 || nr > 9 || nc < 0 || nc > 8) continue;
+                    if (conf && !pal(s, nr, nc)) continue;
+                    n = add(mv, n, i, nr, nc, s, co);
+                  }
+                } else if (t == 3) {
+                  for (int d = 0; d < 4; d++) {
+                    int nr = r + 2 * XR[d], nc = c + 2 * XC[d];
+                    if (nc < 0 || nc > 8 || nr < 0 || nr > 9) continue;
+                    if (conf && (s > 0 ? nr < 5 : nr > 4)) continue;
+                    if (b[(r + XR[d]) * 9 + c + XC[d]] != 0) continue;
+                    n = add(mv, n, i, nr, nc, s, co);
+                  }
+                } else if (t == 4) {
+                  for (int k = 0; k < 8; k++) {
+                    int nr = r + KR[k], nc = c + KC[k];
+                    if (nr < 0 || nr > 9 || nc < 0 || nc > 8) continue;
+                    int lr = Math.abs(KR[k]) == 2 ? r + KR[k] / 2 : r;
+                    int lc = Math.abs(KR[k]) == 2 ? c : c + KC[k] / 2;
+                    if (b[lr * 9 + lc] != 0) continue;
+                    n = add(mv, n, i, nr, nc, s, co);
+                  }
+                } else if (t == 5) {
+                  for (int d = 0; d < 4; d++) {
+                    int nr = r + DR[d], nc = c + DC[d];
+                    while (nr >= 0 && nr < 10 && nc >= 0 && nc < 9) {
+                      int q = b[nr * 9 + nc];
+                      n = add(mv, n, i, nr, nc, s, co);
+                      if (q != 0) break;
+                      nr += DR[d]; nc += DC[d];
+                    }
+                  }
+                } else if (t == 6) {
+                  for (int d = 0; d < 4; d++) {
+                    int nr = r + DR[d], nc = c + DC[d];
+                    boolean j = false;
+                    while (nr >= 0 && nr < 10 && nc >= 0 && nc < 9) {
+                      int q = b[nr * 9 + nc];
+                      if (!j) {
+                        if (q == 0) n = add(mv, n, i, nr, nc, s, co); else j = true;
+                      } else if (q != 0) {
+                        n = add(mv, n, i, nr, nc, s, co);
+                        break;
+                      }
+                      nr += DR[d]; nc += DC[d];
+                    }
+                  }
+                } else if (t == 7) {
+                  int f = s > 0 ? -1 : 1;
+                  if (r + f >= 0 && r + f <= 9) n = add(mv, n, i, r + f, c, s, co);
+                  boolean cr = s > 0 ? r <= 4 : r >= 5;
+                  if (cr) {
+                    if (c > 0) n = add(mv, n, i, r, c - 1, s, co);
+                    if (c < 8) n = add(mv, n, i, r, c + 1, s, co);
+                  }
+                }
+              }
+              return n;
+            }
+
+            // Tướng bên s đang bị chiếu? (quân úp tấn công theo loại ứng với ô nó đứng)
+            boolean inCheck(int s) {
+              int kp = ksq[s > 0 ? 0 : 1];
+              if (kp < 0) return true;
+              int r = kp / 9, c = kp % 9, o = -s;
+              for (int d = 0; d < 4; d++) {
+                int nr = r + DR[d], nc = c + DC[d], cnt = 0;
+                while (nr >= 0 && nr < 10 && nc >= 0 && nc < 9) {
+                  int idx = nr * 9 + nc, q = b[idx];
+                  if (q != 0) {
+                    cnt++;
+                    if (cnt == 1) {
+                      if ((q > 0) == (o > 0)) { int t = et(idx); if (t == 5 || t == 1) return true; }
+                    } else {
+                      if ((q > 0) == (o > 0) && et(idx) == 6) return true;
+                      break;
+                    }
+                  }
+                  nr += DR[d]; nc += DC[d];
+                }
+              }
+              for (int k = 0; k < 8; k++) {
+                int nr = r + KR[k], nc = c + KC[k];
+                if (nr < 0 || nr > 9 || nc < 0 || nc > 8) continue;
+                int idx = nr * 9 + nc, q = b[idx];
+                if (q == 0 || (q > 0) != (o > 0) || et(idx) != 4) continue;
+                int lr, lc;
+                if (Math.abs(KR[k]) == 2) { lr = nr - KR[k] / 2; lc = nc; } else { lr = nr; lc = nc - KC[k] / 2; }
+                if (b[lr * 9 + lc] == 0) return true;
+              }
+              int fo = o > 0 ? -1 : 1;
+              int pr = r - fo;
+              if (pr >= 0 && pr <= 9) { int idx = pr * 9 + c, q = b[idx]; if (q != 0 && (q > 0) == (o > 0) && et(idx) == 7) return true; }
+              boolean cr = o > 0 ? r <= 4 : r >= 5;
+              if (cr) {
+                if (c > 0) { int idx = r * 9 + c - 1, q = b[idx]; if (q != 0 && (q > 0) == (o > 0) && et(idx) == 7) return true; }
+                if (c < 8) { int idx = r * 9 + c + 1, q = b[idx]; if (q != 0 && (q > 0) == (o > 0) && et(idx) == 7) return true; }
+              }
+              if (FREE_REVEALED) {   // Sĩ/Tượng đã lật đi tự do nên có thể chiếu Tướng
+                for (int d = 0; d < 4; d++) {
+                  int ar = r + XR[d], ac = c + XC[d];
+                  if (ar >= 0 && ar <= 9 && ac >= 0 && ac <= 8) {
+                    int idx = ar * 9 + ac, q = b[idx];
+                    if (q != 0 && (q > 0) == (o > 0) && !hid[idx] && Math.abs(q) == 2) return true;
+                  }
+                  int br = r + 2 * XR[d], bc = c + 2 * XC[d];
+                  if (br >= 0 && br <= 9 && bc >= 0 && bc <= 8 && b[ar * 9 + ac] == 0) {
+                    int idx = br * 9 + bc, q = b[idx];
+                    if (q != 0 && (q > 0) == (o > 0) && !hid[idx] && Math.abs(q) == 3) return true;
+                  }
+                }
+              }
+              return false;
+            }
+
+            int eval(int s) {
+              int tot = 0;
+              for (int i = 0; i < 90; i++) {
+                int p = b[i];
+                if (p == 0) continue;
+                int t = p > 0 ? p : -p;
+                if (t == 1) continue;
+                int v = V[t];
+                if (hid[i]) v -= v / 8;
+                else if (t >= 4) v += Engine.PST[t][p > 0 ? i : (9 - i / 9) * 9 + i % 9];
+                tot += p > 0 ? v : -v;
+              }
+              return (s > 0 ? tot : -tot) + 8;
+            }
+
+            void order(int[] mv, int[] sc, int n) {
+              for (int i = 0; i < n; i++) {
+                int m = mv[i], c = b[m & 255];
+                sc[i] = c != 0 ? 100000 + V[Math.abs(c)] * 16 - V[Math.abs(b[m >> 8])] / 4 : (hid[m >> 8] ? 10 : 0);
+              }
+            }
+
+            void tick() {
+              if ((++nodes & 1023) == 0) {
+                if (System.currentTimeMillis() > deadline || (stopper != null && stopper.stop())) stop = true;
+              }
+            }
+
+            int search(int s, int depth, int alpha, int beta, int ply) {
+              tick();
+              if (stop) return 0;
+              if (alpha < -MATE + ply) alpha = -MATE + ply;
+              if (beta > MATE - ply - 1) beta = MATE - ply - 1;
+              if (alpha >= beta) return alpha;
+              boolean chk = inCheck(s);
+              if (chk && ply < 10) depth++;
+              if (depth <= 0 || ply >= 40) return qs(s, alpha, beta, 0, ply);
+              int[] mv = MV[ply], sc = SC[ply];
+              int n = gen(s, mv, false);
+              order(mv, sc, n);
+              int best = -INF, searched = 0;
+              for (int i = 0; i < n; i++) {
+                int bi = i;
+                for (int j = i + 1; j < n; j++) if (sc[j] > sc[bi]) bi = j;
+                int m = mv[bi];
+                mv[bi] = mv[i]; sc[bi] = sc[i];
+                int info = make(m);
+                if (inCheck(s)) { unmake(m, info); continue; }
+                searched++;
+                int v = -search(-s, depth - 1, -beta, -alpha, ply + 1);
+                unmake(m, info);
+                if (stop) return 0;
+                if (v > best) { best = v; if (v > alpha) alpha = v; }
+                if (alpha >= beta) break;
+              }
+              if (searched == 0) return -MATE + ply;
+              return best;
+            }
+
+            int qs(int s, int alpha, int beta, int qd, int ply) {
+              tick();
+              if (stop) return 0;
+              int st = eval(s);
+              if (st >= beta || qd >= 6 || ply >= 60) return st;
+              if (st > alpha) alpha = st;
+              int[] mv = MV[ply], sc = SC[ply];
+              int n = gen(s, mv, true);
+              order(mv, sc, n);
+              for (int i = 0; i < n; i++) {
+                int bi = i;
+                for (int j = i + 1; j < n; j++) if (sc[j] > sc[bi]) bi = j;
+                int m = mv[bi];
+                mv[bi] = mv[i]; sc[bi] = sc[i];
+                int victim = b[m & 255];
+                if (Math.abs(victim) == 1) return MATE - ply;
+                if (st + V[Math.abs(victim)] + 150 < alpha) continue;
+                int info = make(m);
+                if (inCheck(s)) { unmake(m, info); continue; }
+                int v = -qs(-s, -beta, -alpha, qd + 1, ply + 1);
+                unmake(m, info);
+                if (stop) return 0;
+                if (v >= beta) return v;
+                if (v > alpha) alpha = v;
+              }
+              return alpha;
+            }
+
+            // ---------- PIMC ----------
+            void sample(int[] B, int[][] pool, Random rnd, int[] real, boolean[] h) {
+              for (int i = 0; i < 90; i++) { real[i] = B[i]; h[i] = false; }
+              for (int side = 0; side < 2; side++) {
+                int sg = side == 0 ? 1 : -1;
+                int[] sq = new int[16];
+                int ns = 0;
+                for (int i = 0; i < 90; i++) if (B[i] == sg * 9) sq[ns++] = i;
+                if (ns == 0) continue;
+                int[] bag = new int[40];
+                int nb = 0;
+                for (int t = 2; t <= 7; t++) for (int k = 0; k < pool[side][t]; k++) bag[nb++] = t;
+                for (int i = nb - 1; i > 0; i--) { int j = rnd.nextInt(i + 1); int x = bag[i]; bag[i] = bag[j]; bag[j] = x; }
+                for (int k = 0; k < ns; k++) {
+                  real[sq[k]] = sg * (k < nb ? bag[k] : 7);
+                  h[sq[k]] = true;
+                }
+              }
+            }
+
+            boolean evalRoot(int[] rm, int nr, int depth, int[] out) {
+              int bestV = -INF;
+              for (int i = 0; i < nr; i++) {
+                int m = rm[i];
+                int info = make(m);
+                int a0 = bestV == -INF ? -INF : bestV - 120;
+                int v = -search(-1, depth - 1, -INF, -a0, 1);
+                unmake(m, info);
+                if (stop) return false;
+                if (v < a0) v = a0;
+                out[i] = v;
+                if (v > bestV) bestV = v;
+              }
+              return true;
+            }
+
+            int lastWorlds, lastDepth;
+
+            // Trả về {nước, điểm trung bình, độ sâu, số thế giới} cho bên dưới (mình) đi, hoặc null nếu hết nước.
+            int[] best(int[] B, int[][] pool, int ms, Stopper st) {
+              long t0 = System.currentTimeMillis();
+              deadline = t0 + ms;
+              stopper = st;
+              stop = false;
+              nodes = 0;
+              strict = true;
+              Random rnd = new Random(System.nanoTime());
+              int[] real = new int[90];
+              boolean[] h = new boolean[90];
+              sample(B, pool, rnd, real, h);
+              load(real, h);
+              int[] tmp = new int[160];
+              int n0 = gen(1, tmp, false);
+              int[] rm = new int[n0];
+              int nr = 0;
+              for (int i = 0; i < n0; i++) {
+                int info = make(tmp[i]);
+                boolean bad = inCheck(1);
+                unmake(tmp[i], info);
+                if (!bad) rm[nr++] = tmp[i];
+              }
+              if (nr == 0) return null;
+              if (nr == 1) return new int[]{rm[0], 0, 0, 0};
+              long[] tot = new long[nr];
+              int[] out = new int[nr];
+              int worlds = 0, depth = 3, targetW = 14, maxW = 60;
+              boolean calibrated = false;
+              while (worlds < maxW) {
+                if (worlds > 0) { sample(B, pool, rnd, real, h); load(real, h); }
+                long w0 = System.currentTimeMillis();
+                boolean ok = evalRoot(rm, nr, depth, out);
+                if (!ok) break;
+                if (!calibrated) {
+                  calibrated = true;
+                  long tw = Math.max(1, System.currentTimeMillis() - w0);
+                  long budget = (long) (ms * 0.85);
+                  int nd = depth;
+                  if (tw * 6 * targetW < budget) nd = depth + 1;
+                  else if (tw * targetW > budget && depth > 2) nd = depth - 1;
+                  if (nd != depth) { depth = nd; continue; }   // bỏ kết quả thế giới đầu, làm lại ở độ sâu mới
+                }
+                for (int i = 0; i < nr; i++) tot[i] += out[i];
+                worlds++;
+                if (System.currentTimeMillis() - t0 > ms * 0.85) break;
+              }
+              if (worlds == 0) {                      // hết giờ trước khi xong thế giới nào: lấy nước ưu tiên ăn quân
+                load(real, h);
+                int bi = 0, bs = -INF;
+                for (int i = 0; i < nr; i++) {
+                  int c = b[rm[i] & 255];
+                  int sc = c != 0 ? V[Math.abs(c)] : 0;
+                  if (sc > bs) { bs = sc; bi = i; }
+                }
+                return new int[]{rm[bi], 0, 0, 0};
+              }
+              int bi = 0;
+              for (int i = 1; i < nr; i++) if (tot[i] > tot[bi]) bi = i;
+              lastWorlds = worlds; lastDepth = depth;
+              return new int[]{rm[bi], (int) (tot[bi] / worlds), depth, worlds};
+            }
+
+            // ---------- Theo dõi ván: tìm 1-2 nước (bên tới lượt đi trước) đưa bàn B tới đúng thế trên màn hình ----------
+            // Quân úp đi theo ô đang đứng; không cần biết quân thật. Dùng luật rộng (Sĩ/Tượng tự do) để không bỏ sót nước. Mảng rỗng: chưa có gì đổi; null: không khớp.
+            int[] explain(int[] B, boolean mineTurn, int[] occ, int mineC) {
+              int[] real = new int[90];
+              boolean[] h = new boolean[90];
+              for (int i = 0; i < 90; i++) {
+                int p = B[i];
+                if (p == 9 || p == -9) { h[i] = true; real[i] = p > 0 ? 7 : -7; }
+                else if (p == 8 || p == -8) real[i] = p > 0 ? 7 : -7;
+                else real[i] = p;
+              }
+              load(real, h);
+              boolean saveStrict = strict;
+              boolean saveFree = FREE_REVEALED;
+              strict = false;
+              FREE_REVEALED = true;
+              try {
+                if (occMatch(occ, mineC)) return new int[0];
+                int s = mineTurn ? 1 : -1;
+                int[] m1 = new int[160], m2 = new int[160];
+                int n1 = gen(s, m1, false);
+                for (int i = 0; i < n1; i++) {
+                  int a = m1[i];
+                  int ia = make(a);
+                  if (occMatch(occ, mineC)) { unmake(a, ia); return new int[]{a}; }
+                  int n2 = gen(-s, m2, false);
+                  for (int j = 0; j < n2; j++) {
+                    int c = m2[j];
+                    int ic = make(c);
+                    boolean ok = occMatch(occ, mineC);
+                    unmake(c, ic);
+                    if (ok) { unmake(a, ia); return new int[]{a, c}; }
+                  }
+                  unmake(a, ia);
+                }
+                return null;
+              } finally {
+                strict = saveStrict;
+                FREE_REVEALED = saveFree;
+              }
+            }
+
+            boolean occMatch(int[] occ, int mineC) {
+              for (int i = 0; i < 90; i++) {
+                int p = b[i];
+                int e = p == 0 ? 0 : (p > 0 ? mineC : 3 - mineC);
+                if (occ[i] != e) return false;
+              }
+              return true;
+            }
+          }
+          EOF
           mkdir -p $(dirname app/src/main/java/com/cotuong/helper/MainActivity.java)
           cat > app/src/main/java/com/cotuong/helper/MainActivity.java <<'EOF'
           package com.cotuong.helper;
 
           import android.app.Activity;
+          import android.content.SharedPreferences;
           import android.content.Intent;
           import android.media.projection.MediaProjectionManager;
           import android.net.Uri;
@@ -1315,6 +1874,10 @@ jobs:
           import android.provider.Settings;
           import android.view.View;
           import android.widget.Button;
+          import android.widget.CheckBox;
+          import android.widget.CompoundButton;
+          import android.widget.RadioButton;
+          import android.widget.RadioGroup;
           import android.widget.LinearLayout;
           import android.widget.ScrollView;
           import android.widget.TextView;
@@ -1329,6 +1892,39 @@ jobs:
               l.setPadding(40, 60, 40, 40);
               String ver = "";
               try { ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Throwable e) { }
+              final SharedPreferences sp = getSharedPreferences("cfg", MODE_PRIVATE);
+              TextView mt = new TextView(this);
+              mt.setTextSize(18);
+              mt.setText("CHỌN LOẠI CỜ");
+              l.addView(mt);
+              RadioGroup rg = new RadioGroup(this);
+              RadioButton rn = new RadioButton(this);
+              rn.setId(101);
+              rn.setText("Cờ thường (đủ quân, mở mặt)");
+              RadioButton ru = new RadioButton(this);
+              ru.setId(102);
+              ru.setText("Cờ úp (quân úp, đi xong mới lật)");
+              rg.addView(rn);
+              rg.addView(ru);
+              rg.check("dark".equals(sp.getString("mode", "normal")) ? 102 : 101);
+              rg.setOnCheckedChangeListener(new RadioGroup.OnCheckedChangeListener() {
+                public void onCheckedChanged(RadioGroup group, int id) {
+                  sp.edit().putString("mode", id == 102 ? "dark" : "normal").apply();
+                  Toast.makeText(MainActivity.this, id == 102 ? "Đã chọn CỜ ÚP. Vào game bấm \"↻ Ván mới\" để áp dụng." : "Đã chọn Cờ thường. Vào game bấm \"↻ Ván mới\" để áp dụng.", Toast.LENGTH_LONG).show();
+                }
+              });
+              l.addView(rg);
+              CheckBox cb = new CheckBox(this);
+              cb.setText("Cờ úp: Sĩ/Tượng sau khi lật được đi tự do (không giới hạn trong cung/nửa sân)");
+              cb.setChecked(sp.getBoolean("sxFree", true));
+              cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                public void onCheckedChanged(CompoundButton v, boolean on) { sp.edit().putBoolean("sxFree", on).apply(); }
+              });
+              l.addView(cb);
+              TextView hint = new TextView(this);
+              hint.setTextSize(13);
+              hint.setText("Nếu game của bạn giữ Sĩ/Tượng trong cung/nửa sân sau khi lật thì bỏ chọn ô trên.\n");
+              l.addView(hint);
               TextView t = new TextView(this);
               t.setTextSize(16);
               t.setText("TRỢ LÝ CỜ TƯỚNG (bản " + ver + ")\n\n"
@@ -1341,7 +1937,8 @@ jobs:
                   + "Chạm bong bóng: đọc lại cả bàn cờ (dùng khi vào giữa ván hoặc bị lệch). Giữ bong bóng: căn lại lưới. Kéo bong bóng/nút: đổi chỗ (đừng để che bàn cờ).\n"
                                       + "MŨI TÊN: nước gợi ý được vẽ bằng mũi tên xanh lá trên bàn cờ, tự ẩn khi bạn bấm nút xanh. Lúc chờ đối thủ, Pikafish nghĩ trước thế sau nước dự kiến; nếu đối thủ đi đúng như dự đoán thì gợi ý hiện gần như ngay (bong bóng ghi \"đã nghĩ trước\").\n\n"
                             + "GIẢI THẾ CỜ: mở thế cờ trong game, bấm nút xanh lá \"🧩 Giải thế\" (bên dưới đi trước). Giữ nút này để giải cho bên trên đi trước. App đọc thế, tìm đường chiếu hết và ghi cả biến chính. Không cần bấm Ván mới.\n\n"
-                            + "Bàn cờ phải nằm trọn trên màn hình, quân của bạn ở phía dưới.\n");
+                            + "CỜ ÚP: chọn \"Cờ úp\" ở trên rồi bấm \"↻ Ván mới\" lúc các quân còn úp (chỉ Tướng lộ mặt). Quân úp đi theo loại quân của ô nó đứng, đi xong thì lật. App tự đọc chữ quân vừa lật, tính xác suất các quân còn úp rồi gợi ý (ghi rõ \"LẬT QUÂN\" khi nước đi là quân úp). Khi không còn quân úp, app dùng lại Pikafish. Mục \"Giải thế\" chỉ dùng ở Cờ thường.\n\n"
+                  + "Bàn cờ phải nằm trọn trên màn hình, quân của bạn ở phía dưới.\n");
               l.addView(t);
               l.addView(btn("1. Cấp quyền hiển thị trên ứng dụng khác", new View.OnClickListener() {
                 public void onClick(View v) {
@@ -1448,6 +2045,10 @@ jobs:
             volatile Bitmap last;
             Recog recog;
             final Engine eng = new Engine();
+            final DarkEngine deng = new DarkEngine();   // chế độ cờ úp
+            volatile boolean dark;                       // đang ở chế độ cờ úp?
+            int[][] pool = DarkEngine.fullPool();        // số quân chưa lộ của mỗi bên: [0] mình, [1] đối thủ
+            int ocrFail = 0;
             Uci uci;
             static final int THINK_MS = 8000;
             static final int SOLVE_MS = 30000;
@@ -1506,6 +2107,7 @@ jobs:
               g[1] = sp.getFloat("y0", 0.2935f * H);
               g[2] = sx;
               g[3] = sp.getFloat("sy", sx * 1.008f);
+              loadMode();
               running = true;
               bg.post(new Runnable() {
                 @Override public void run() {
@@ -1528,6 +2130,15 @@ jobs:
               showCalib();
               return START_NOT_STICKY;
             }
+
+            // Đọc chế độ chơi đã chọn ở màn hình chính (Cờ thường / Cờ úp)
+            void loadMode() {
+              dark = "dark".equals(sp.getString("mode", "normal"));
+              DarkEngine.FREE_REVEALED = sp.getBoolean("sxFree", true);
+              Glyph.relax = dark;
+            }
+
+            String modeName() { return dark ? "Chế độ: CỜ ÚP" : "Chế độ: Cờ thường"; }
 
             // Chép mạng NNUE từ assets ra bộ nhớ app (Pikafish cần đọc file thật). Trả về đường dẫn hoặc null.
             String prepareNet() {
@@ -1708,16 +2319,18 @@ jobs:
             // Ván mới: xoá toàn bộ trí nhớ, báo Pikafish bắt đầu ván mới và đọc/tính lại từ đầu
             void newGame() {
               if (!running) return;
+              loadMode();
               cancel = true;
               waiting = false;
               setWaitBtn(false);
               if (uci != null) uci.abort();
               hideArrow();
               ponderBoard = null;
-              say("Ván mới…", "Đang đặt lại");
+              say("Ván mới…", modeName());
               bg.post(new Runnable() {
                 @Override public void run() {
-                  prevOcc = ""; cur = null; turnMine = true; stableN = 0; miss = 0; lastNote = "";
+                  prevOcc = ""; cur = null; turnMine = true; stableN = 0; miss = 0; lastNote = ""; ocrFail = 0;
+                pool = DarkEngine.fullPool();
                   if (recog != null) recog.reset();
                   eng.reset();
                   try { if (uci != null && uci.ready) uci.newGame(); } catch (Throwable t) { }
@@ -1856,7 +2469,7 @@ jobs:
               waiting = false;
               setWaitBtn(false);
               calibrating = false;
-              say("Căn lưới xong", "Bấm \"↻ Ván mới\" để đọc bàn cờ\nSau mỗi nước của bạn: bấm nút xanh \"⏱ Đối thủ đi\"\n" + engNote);
+              say("Căn lưới xong", "Bấm \"↻ Ván mới\" để đọc bàn cờ\nSau mỗi nước của bạn: bấm nút xanh \"⏱ Đối thủ đi\"\n" + modeName() + " · " + engNote);
               bg.removeCallbacks(loop);
               bg.postDelayed(loop, 1200);
             }
@@ -1908,9 +2521,9 @@ jobs:
               // đang chờ: đợi bàn cờ đổi rồi đứng yên (hết hiệu ứng quân bay)
               if (!occ.equals(prevOcc)) { prevOcc = occ; stableN = 0; return; }
               stableN++;
-              if (stableN < 1 || cur == null) return;
+              if (stableN < (dark ? 2 : 1) || cur == null) return;   // cờ úp: chờ thêm để quân lật xong hiệu ứng rồi mới đọc chữ
               int[] o = recog.occ.clone();
-              int[] r = Track.explain(eng, cur, turnMine, o, mineC);
+              int[] r = dark ? deng.explain(cur, turnMine, o, mineC) : Track.explain(eng, cur, turnMine, o, mineC);
               if (r != null && r.length == 0) { miss = 0; return; }   // chưa có gì thay đổi: tiếp tục đợi
               if (r == null) {
                 miss++;
@@ -1919,6 +2532,7 @@ jobs:
                 return;
               }
               miss = 0;
+              if (dark) { applyDark(bm, r); return; }
               StringBuilder note = new StringBuilder();
               for (int m : r) {
                 String t = turnMine ? Notation.viet(cur, m) : Notation.viet(Engine.flip(cur), Engine.fm(m));
@@ -1932,6 +2546,68 @@ jobs:
               waiting = false;
               setWaitBtn(false);
               suggest();
+            }
+
+            // Cờ úp: áp 1-2 nước vừa thấy vào bàn đang theo dõi. Quân úp vừa đi được lật nên phải đọc chữ của nó ở ô đến;
+            // chỉ ghi nhận khi đọc xong tất cả, nếu chưa đọc được thì giữ nguyên và thử lại ở lần quét sau.
+            void applyDark(Bitmap bm, int[] r) {
+              int[] nb = cur.clone();
+              int[][] np = {pool[0].clone(), pool[1].clone()};
+              boolean t = turnMine;
+              int[] pend = new int[4], pendSide = new int[4];
+              int npd = 0;
+              StringBuilder note = new StringBuilder();
+              for (int m : r) {
+                int from = m >> 8, to = m & 255;
+                int[] vb = DarkEngine.disp(nb);
+                String tx = t ? Notation.viet(vb, m) : Notation.viet(Engine.flip(vb), Engine.fm(m));
+                boolean wasHid = Math.abs(nb[from]) == 9;
+                int sg = nb[from] > 0 ? 1 : -1;
+                for (int k = 0; k < npd; k++) if (pend[k] == to) pend[k] = -1;   // quân vừa lật bị ăn ngay: không đọc được nữa
+                nb[to] = wasHid ? sg * 8 : nb[from];
+                nb[from] = 0;
+                if (wasHid) { pend[npd] = to; pendSide[npd] = sg > 0 ? 0 : 1; npd++; tx += " (lật)"; }
+                if (note.length() > 0) note.append("  ·  ");
+                note.append(t ? "Bạn: " : "Đối thủ: ").append(tx);
+                t = !t;
+              }
+              for (int k = 0; k < npd; k++) {
+                if (pend[k] < 0) continue;
+                int sq = pend[k], side = pendSide[k];
+                int ty = recog.ocrSquare(bm, g, sq);
+                if (ty == 0 || ty == 1 || np[side][ty] <= 0) {   // chưa đọc được (đang lật?) hoặc đọc ra loại quân không còn
+                  ocrFail++;
+                  if (ocrFail == 5) say("Chưa đọc được quân vừa lật", "Đang thử lại… nếu kẹt, chạm bong bóng để đọc lại cả bàn");
+                  if (ocrFail >= 12) { ocrFail = 0; rereadWhileWaiting(bm); }
+                  return;
+                }
+                nb[sq] = (nb[sq] > 0 ? 1 : -1) * ty;
+                np[side][ty]--;
+              }
+              ocrFail = 0;
+              cur = nb;
+              pool = np;
+              turnMine = t;
+              lastNote = note.toString();
+              if (!turnMine) { say("Đã ghi nước của bạn", lastNote + "\nĐang chờ đối thủ đi…"); return; }
+              waiting = false;
+              setWaitBtn(false);
+              suggest();
+            }
+
+            // Cờ úp: đọc cả bàn khi vào giữa ván (quân có chữ thì đọc chữ, mặt trống là quân úp)
+            int[] readBoardDark(Bitmap bm) {
+              int[] B = recog.classifyDark(bm, g);
+              if (recog.unknown > 0) { say("Không đọc được " + recog.unknown + " quân", "Chạm bong bóng để thử lại." + recog.unknownAt); return null; }
+              int kM = 0, kO = 0, hM = 0, hO = 0;
+              for (int p : B) { if (p == 1) kM++; if (p == -1) kO++; if (p == 9) hM++; if (p == -9) hO++; }
+              if (kM != 1 || kO != 1) { say("Thiếu Tướng/Soái", "Kiểm tra căn lưới (giữ bong bóng) hoặc chạm để đọc lại"); return null; }
+              int[][] pl = DarkEngine.poolFromBoard(B);
+              int sM = 0, sO = 0;
+              for (int t = 2; t <= 7; t++) { sM += pl[0][t]; sO += pl[1][t]; }
+              if (hM > sM || hO > sO) { say("Bàn cờ đọc có vẻ sai", "Số quân úp nhiều hơn số quân còn lại\nChạm bong bóng để đọc lại · Giữ: căn lại lưới"); return null; }
+              pool = pl;
+              return B;
             }
 
             int countOcc() {
@@ -1964,8 +2640,10 @@ jobs:
               mineC = recog.mineOcc;
               int[] o = recog.occ.clone();
               boolean start = Track.isStartOcc(o, mineC);
-              int[] B = start ? Track.startBoard() : readBoard(bm);
+              int[] B = start ? (dark ? DarkEngine.darkStart() : Track.startBoard()) : readBoard(bm);
               if (B == null) return;
+              if (dark && start) pool = DarkEngine.fullPool();
+              ocrFail = 0;
               cur = B;
               turnMine = !(start && mineC == 2);   // mình cầm đen thì đỏ đi trước
               lastNote = fitted ? "Đã tự căn lưới" : "";
@@ -1992,7 +2670,7 @@ jobs:
               suggest();
             }
 
-            int[] readBoard(Bitmap bm) { return readBoard(bm, true, false); }
+            int[] readBoard(Bitmap bm) { return dark ? readBoardDark(bm) : readBoard(bm, true, false); }
 
             // quiet = true: không báo lỗi lên bong bóng (dùng khi thử nhiều cách đọc)
             int[] readBoard(Bitmap bm, boolean mineMoves, boolean quiet) {
@@ -2017,7 +2695,32 @@ jobs:
             }
 
             // Tính nước tốt nhất cho bàn cờ đang theo dõi (tới lượt mình)
-            void suggest() {
+            void suggest() { if (dark) suggestDark(); else suggestStd(); }
+
+            // Cờ úp: còn quân úp thì Pikafish không dùng được (nó không biết quân úp đi theo ô đang đứng) -> engine cờ úp lấy mẫu nhiều thế giới;
+            // hết quân úp (và luật Sĩ/Tượng khớp cờ thường) thì dùng lại Pikafish.
+            void suggestDark() {
+              cancel = false;
+              final int[] B = cur.clone();
+              if (DarkEngine.stdSafe(B)) { suggestStd(); return; }
+              ponderBoard = null;
+              say("Đang tính nước đi (cờ úp)…", lastNote.isEmpty() ? null : lastNote);
+              int[] r = deng.best(B, pool, THINK_MS, new DarkEngine.Stopper() {
+                @Override public boolean stop() { return cancel; }
+              });
+              if (cancel) return;
+              if (r == null) { say("Hết nước đi", "Ván cờ đã kết thúc?"); return; }
+              int m = r[0];
+              int[] vb = DarkEngine.disp(B);
+              boolean flipMv = Math.abs(B[m >> 8]) == 9;
+              String head = lastNote.isEmpty() ? "" : lastNote + "\n";
+              String ev = r[3] > 0 ? eng.verdict(r[1]) + " · sâu " + r[2] + " · " + r[3] + " thế giả định" : "tính gấp (hết giờ)";
+              say("▶ " + Notation.viet(vb, m), head + Notation.sq(vb, m) + (flipMv ? " · LẬT QUÂN" : "") + "\n" + ev + " · Cờ úp"
+                  + "\nĐi xong bấm nút xanh \"Đối thủ đi\"");
+              showArrow(m >> 8, m & 255);
+            }
+
+            void suggestStd() {
               cancel = false;
               final int[] B = cur.clone();
               if ((uci == null || !uci.ready) && engTry < 3) {
@@ -2176,6 +2879,8 @@ jobs:
             // Chạm nút = bên dưới đi trước; giữ nút = bên trên đi trước.
             void solve(final boolean mineMoves) {
               if (!running || calibrating) return;
+              loadMode();
+              if (dark) { say("Giải thế chỉ dùng ở Cờ thường", "Đổi chế độ ở màn hình chính của app"); return; }
               cancel = true;
               waiting = false;
               setWaitBtn(false);

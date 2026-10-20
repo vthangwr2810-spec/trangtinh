@@ -1,7 +1,8 @@
-name: Build APK Tro ly Co Tuong
+name: Build APK Co Tuong Tu Dong
 
-# Tai file nay len GitHub tai: .github/workflows/build.yml
-# Sau do vao tab Actions -> Build APK -> tai CoTuongHelper-APK o muc Artifacts.
+# Tai file nay len GitHub tai: .github/workflows/build-auto.yml
+# Sau do vao tab Actions -> Build APK Co Tuong Tu Dong -> tai CoTuongAuto-APK o muc Artifacts.
+# App rieng (applicationId com.cotuong.auto), cai song song voi app Tro ly Co Tuong ban dau.
 
 on:
   push:
@@ -35,7 +36,7 @@ jobs:
             repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
             repositories { google(); mavenCentral() }
           }
-          rootProject.name = 'CoTuongHelper'
+          rootProject.name = 'CoTuongAuto'
           include ':app'
           EOF
           mkdir -p $(dirname build.gradle)
@@ -54,7 +55,7 @@ jobs:
             namespace 'com.cotuong.helper'
             compileSdk 34
             defaultConfig {
-              applicationId 'com.cotuong.helper'
+              applicationId 'com.cotuong.auto'
               minSdk 26
               targetSdk 34
               versionCode 1
@@ -81,7 +82,7 @@ jobs:
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
             <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-            <application android:label="Trợ lý Cờ Tướng" android:theme="@android:style/Theme.DeviceDefault.Light">
+            <application android:label="Cờ Tướng Tự Động" android:theme="@android:style/Theme.DeviceDefault.Light">
               <activity android:name=".MainActivity" android:exported="true">
                 <intent-filter>
                   <action android:name="android.intent.action.MAIN"/>
@@ -89,8 +90,69 @@ jobs:
                 </intent-filter>
               </activity>
               <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="mediaProjection"/>
+              <service android:name=".AutoTapService" android:exported="false" android:label="Cờ Tướng Tự Động – tự chạm"
+                  android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                <intent-filter>
+                  <action android:name="android.accessibilityservice.AccessibilityService"/>
+                </intent-filter>
+                <meta-data android:name="android.accessibilityservice" android:resource="@xml/autotap_config"/>
+              </service>
             </application>
           </manifest>
+          EOF
+          mkdir -p app/src/main/res/xml app/src/main/res/values
+          cat > app/src/main/res/xml/autotap_config.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canPerformGestures="true"
+              android:description="@string/autotap_desc"
+              android:notificationTimeout="100"/>
+          EOF
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="autotap_desc">Cho phép app chạm vào màn hình để tự đi nước cờ. Chỉ chạy khi bạn bấm Bắt đầu.</string>
+          </resources>
+          EOF
+          mkdir -p app/src/main/java/com/cotuong/helper
+          cat > app/src/main/java/com/cotuong/helper/AutoTapService.java <<'EOF'
+          package com.cotuong.helper;
+
+          import android.accessibilityservice.AccessibilityService;
+          import android.accessibilityservice.GestureDescription;
+          import android.content.Intent;
+          import android.graphics.Path;
+          import android.view.accessibility.AccessibilityEvent;
+
+          // Dịch vụ Trợ năng: chỉ dùng để chạm vào một điểm trên màn hình khi CaptureService yêu cầu
+          public class AutoTapService extends AccessibilityService {
+            static volatile AutoTapService inst;
+
+            @Override protected void onServiceConnected() { inst = this; }
+            @Override public void onAccessibilityEvent(AccessibilityEvent e) { }
+            @Override public void onInterrupt() { }
+            @Override public boolean onUnbind(Intent i) { inst = null; return super.onUnbind(i); }
+            @Override public void onDestroy() { inst = null; super.onDestroy(); }
+
+            // Chạm 1 điểm (toạ độ màn hình). ok chạy khi chạm xong, fail chạy khi bị huỷ/không gửi được (cả hai chạy trên luồng chính)
+            boolean tap(float x, float y, final Runnable ok, final Runnable fail) {
+              Path p = new Path();
+              p.moveTo(x, y);
+              GestureDescription.Builder b = new GestureDescription.Builder();
+              b.addStroke(new GestureDescription.StrokeDescription(p, 0, 60));
+              boolean sent;
+              try {
+                sent = dispatchGesture(b.build(), new GestureResultCallback() {
+                  @Override public void onCompleted(GestureDescription g) { if (ok != null) ok.run(); }
+                  @Override public void onCancelled(GestureDescription g) { if (fail != null) fail.run(); }
+                }, null);
+              } catch (Throwable t) { sent = false; }
+              if (!sent && fail != null) fail.run();
+              return sent;
+            }
+          }
           EOF
           mkdir -p $(dirname app/src/main/java/com/cotuong/helper/Engine.java)
           cat > app/src/main/java/com/cotuong/helper/Engine.java <<'EOF'
@@ -799,7 +861,7 @@ jobs:
                   t++;
                   for (int o = -tol; o <= tol; o++) {
                     int x = Math.round(x0 + (float) CA[k] * o), y = Math.round(y0 + (float) SA[k] * o);
-                    if (lum(pix[y * w + x]) < 125) { d++; break; }
+                    if (lum(pix[y * w + x]) < 140) { d++; break; }
                   }
                 }
                 if (t > 48 / step / 2) best = Math.max(best, (float) d / t);
@@ -818,15 +880,20 @@ jobs:
 
             // Tìm lưới {x0, y0, bước ngang, bước dọc} làm 32 vòng quân của thế xuất phát khớp nhất, tìm quanh lưới g0
             // (dịch tới +-30 px, đổi cỡ ô tới +-6 px). Trả về null nếu không thấy thế xuất phát (giữa ván, hoặc không phải bàn cờ).
-            float[] fitStart(Bitmap bm, float[] g0) {
+            float[] fitStart(Bitmap bm, float[] g0) { return fitStartR(bm, g0, 30, 30, 6); }
+
+            // Tìm rộng hơn (dịch ngang +-36 px, dọc +-120 px): dùng khi chưa có lưới đã lưu cho màn hình này
+            float[] fitStartWide(Bitmap bm, float[] g0) { return fitStartR(bm, g0, 36, 120, 6); }
+
+            float[] fitStartR(Bitmap bm, float[] g0, int rx, int ry, int rs) {
               grabPixels(bm);
               float ratio = g0[3] / g0[2];
               // Vòng 1: thô
               float[] b = null;
               float bs = -1;
-              for (int ds = -6; ds <= 6; ds += 3)
-                for (int dx = -30; dx <= 30; dx += 6)
-                  for (int dy = -30; dy <= 30; dy += 6) {
+              for (int ds = -rs; ds <= rs; ds += 3)
+                for (int dx = -rx; dx <= rx; dx += 6)
+                  for (int dy = -ry; dy <= ry; dy += 6) {
                     float sx = g0[2] + ds;
                     float s = fitScore(g0[0] + dx, g0[1] + dy, sx, sx * ratio, 4, 0.36f, 0.40f, 0.02f, 2);
                     if (s > bs) { bs = s; b = new float[]{g0[0] + dx, g0[1] + dy, sx, sx * ratio}; }
@@ -1884,19 +1951,23 @@ jobs:
           import android.widget.Toast;
 
           public class MainActivity extends Activity {
+            TextView status;
+
             @Override protected void onCreate(Bundle s) {
               super.onCreate(s);
               if (Build.VERSION.SDK_INT >= 33) requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
               LinearLayout l = new LinearLayout(this);
               l.setOrientation(LinearLayout.VERTICAL);
               l.setPadding(40, 60, 40, 40);
-              String ver = "";
-              try { ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Throwable e) { }
               final SharedPreferences sp = getSharedPreferences("cfg", MODE_PRIVATE);
-              TextView mt = new TextView(this);
-              mt.setTextSize(18);
-              mt.setText("CHỌN LOẠI CỜ");
-              l.addView(mt);
+              TextView title = new TextView(this);
+              title.setTextSize(20);
+              title.setText("CỜ TƯỚNG TỰ ĐỘNG");
+              l.addView(title);
+              status = new TextView(this);
+              status.setTextSize(14);
+              status.setPadding(0, 16, 0, 16);
+              l.addView(status);
               RadioGroup rg = new RadioGroup(this);
               RadioButton rn = new RadioButton(this);
               rn.setId(101);
@@ -1910,45 +1981,35 @@ jobs:
               rg.setOnCheckedChangeListener(new RadioGroup.OnCheckedChangeListener() {
                 public void onCheckedChanged(RadioGroup group, int id) {
                   sp.edit().putString("mode", id == 102 ? "dark" : "normal").apply();
-                  Toast.makeText(MainActivity.this, id == 102 ? "Đã chọn CỜ ÚP. Vào game bấm \"↻ Ván mới\" để áp dụng." : "Đã chọn Cờ thường. Vào game bấm \"↻ Ván mới\" để áp dụng.", Toast.LENGTH_LONG).show();
+                  Toast.makeText(MainActivity.this, id == 102 ? "Đã chọn Cờ úp" : "Đã chọn Cờ thường", Toast.LENGTH_SHORT).show();
                 }
               });
               l.addView(rg);
               CheckBox cb = new CheckBox(this);
-              cb.setText("Cờ úp: Sĩ/Tượng sau khi lật được đi tự do (không giới hạn trong cung/nửa sân)");
+              cb.setText("Cờ úp: Sĩ/Tượng sau khi lật được đi tự do");
               cb.setChecked(sp.getBoolean("sxFree", true));
               cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                 public void onCheckedChanged(CompoundButton v, boolean on) { sp.edit().putBoolean("sxFree", on).apply(); }
               });
               l.addView(cb);
-              TextView hint = new TextView(this);
-              hint.setTextSize(13);
-              hint.setText("Nếu game của bạn giữ Sĩ/Tượng trong cung/nửa sân sau khi lật thì bỏ chọn ô trên.\n");
-              l.addView(hint);
-              TextView t = new TextView(this);
-              t.setTextSize(16);
-              t.setText("TRỢ LÝ CỜ TƯỚNG (bản " + ver + ")\n\n"
-                  + "1. Bấm nút 1 để cấp quyền hiển thị bong bóng.\n"
-                  + "2. Mở game, vào ván cờ. Quay lại đây bấm nút 2, chọn cho phép ghi toàn màn hình (Bắt đầu ngay).\n"
-                  + "3. Quay lại game: lưới xanh hiện lên. Nếu bàn cờ đang ở thế xuất phát thì cứ bấm LƯU, khi bấm \"Ván mới\" app tự căn lưới cho khớp. Nếu vẫn lệch hoặc đang giữa ván thì kéo lưới cho các vòng vàng khớp quân cờ (W/H chỉnh độ rộng/cao ô), bấm LƯU.\n"
-                  + "4. Bấm nút đỏ \"↻ Ván mới\" lúc bàn cờ đang ở thế xuất phát. Tới lượt bạn, bong bóng ghi nước đi, ví dụ \"Pháo 8 bình 5\".\n"
-                  + "5. Bạn đi xong thì bấm nút xanh \"⏱ Đối thủ đi\". App tự đợi tới khi đối thủ đi xong (bàn cờ đổi và đứng yên) rồi mới tính nước tiếp theo, không bị lộn nước.\n\n"
-                  + "App chỉ đọc chữ trên quân một lần lúc bắt đầu; sau đó theo dõi từng nước đi nên không còn lỗi đọc nhầm quân giữa ván. Bạn đi khác gợi ý cũng được.\n\n"
-                  + "Chạm bong bóng: đọc lại cả bàn cờ (dùng khi vào giữa ván hoặc bị lệch). Giữ bong bóng: căn lại lưới. Kéo bong bóng/nút: đổi chỗ (đừng để che bàn cờ).\n"
-                                      + "MŨI TÊN: nước gợi ý được vẽ bằng mũi tên xanh lá trên bàn cờ, tự ẩn khi bạn bấm nút xanh. Lúc chờ đối thủ, Pikafish nghĩ trước thế sau nước dự kiến; nếu đối thủ đi đúng như dự đoán thì gợi ý hiện gần như ngay (bong bóng ghi \"đã nghĩ trước\").\n\n"
-                            + "GIẢI THẾ CỜ: mở thế cờ trong game, bấm nút xanh lá \"🧩 Giải thế\" (bên dưới đi trước). Giữ nút này để giải cho bên trên đi trước. App đọc thế, tìm đường chiếu hết và ghi cả biến chính. Không cần bấm Ván mới.\n\n"
-                            + "CỜ ÚP: chọn \"Cờ úp\" ở trên rồi bấm \"↻ Ván mới\" lúc các quân còn úp (chỉ Tướng lộ mặt). Quân úp đi theo loại quân của ô nó đứng, đi xong thì lật. App tự đọc chữ quân vừa lật, tính xác suất các quân còn úp rồi gợi ý (ghi rõ \"LẬT QUÂN\" khi nước đi là quân úp). Khi không còn quân úp, app dùng lại Pikafish. Mục \"Giải thế\" chỉ dùng ở Cờ thường.\n\n"
-                  + "Bàn cờ phải nằm trọn trên màn hình, quân của bạn ở phía dưới.\n");
-              l.addView(t);
               l.addView(btn("1. Cấp quyền hiển thị trên ứng dụng khác", new View.OnClickListener() {
                 public void onClick(View v) {
                   startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
                 }
               }));
-              l.addView(btn("2. Bắt đầu", new View.OnClickListener() {
+              l.addView(btn("2. Bật Trợ năng (để app tự chạm)", new View.OnClickListener() {
+                public void onClick(View v) {
+                  startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                }
+              }));
+              l.addView(btn("3. Bắt đầu", new View.OnClickListener() {
                 public void onClick(View v) {
                   if (!Settings.canDrawOverlays(MainActivity.this)) {
                     Toast.makeText(MainActivity.this, "Hãy cấp quyền ở nút 1 trước", Toast.LENGTH_LONG).show();
+                    return;
+                  }
+                  if (AutoTapService.inst == null) {
+                    Toast.makeText(MainActivity.this, "Hãy bật Trợ năng ở nút 2 trước", Toast.LENGTH_LONG).show();
                     return;
                   }
                   MediaProjectionManager m = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
@@ -1965,6 +2026,13 @@ jobs:
               ScrollView sv = new ScrollView(this);
               sv.addView(l);
               setContentView(sv);
+            }
+
+            @Override protected void onResume() {
+              super.onResume();
+              boolean ov = Settings.canDrawOverlays(this);
+              boolean ac = AutoTapService.inst != null;
+              status.setText("Hiển thị trên ứng dụng khác: " + (ov ? "ĐÃ CẤP" : "CHƯA CẤP") + "\nTrợ năng (tự chạm): " + (ac ? "ĐÃ BẬT" : "CHƯA BẬT"));
             }
 
             Button btn(String s, View.OnClickListener c) {
@@ -2054,9 +2122,9 @@ jobs:
             static final int SOLVE_MS = 30000;
             static final int PONDER_MS = 12000;
             volatile String engNote = "Đang nạp Pikafish…";
-            TextView rbtn, ebtn, sbtn;
-            ArrowView arrow;                 // mũi tên gợi ý trên bàn cờ
-            volatile long arrowHiddenAt;     // lúc ẩn mũi tên gần nhất (để chờ hình màn hình cập nhật trước khi quét)
+            TextView rbtn, ebtn, sbtn, abtn;
+            volatile boolean autoPlay;       // tự chạm đi nước gợi ý (cần bật Trợ năng)
+            volatile long autoGen;           // đổi số này để huỷ lần tự đi đang chờ
             int[] ponderBoard;               // thế Pikafish đang nghĩ trước (sau nước ta + nước đối thủ dự đoán)
             int[] cur;                       // bàn cờ đang theo dõi (quân mình > 0, ở dưới)
             boolean turnMine = true;         // đang tới lượt mình?
@@ -2102,11 +2170,11 @@ jobs:
               vd = proj.createVirtualDisplay("cap", W, H, dm.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                   reader.getSurface(), null, null);
               recog = new Recog();
-              float sx = sp.getFloat("sx", 0.1061f * W);
-              g[0] = sp.getFloat("x0", 0.0742f * W);
-              g[1] = sp.getFloat("y0", 0.2935f * H);
+              float sx = sp.getFloat("sx", 0.1075f * W);
+              g[0] = sp.getFloat("x0", 0.0690f * W);
+              g[1] = sp.getFloat("y0", 0.3183f * H);
               g[2] = sx;
-              g[3] = sp.getFloat("sy", sx * 1.008f);
+              g[3] = sp.getFloat("sy", sx * 0.9984f);
               loadMode();
               running = true;
               bg.post(new Runnable() {
@@ -2116,18 +2184,13 @@ jobs:
                 }
               });
               makeBubble();
-              rbtn = makeFloat("↻ Ván mới", 0xEEB71C1C, Math.max(0, W - 380), (int) (0.05f * H), new Runnable() {
-                @Override public void run() { newGame(); }
+              abtn = makeFloat("▶ Bắt đầu", 0xEE2E7D32, Math.max(0, W - 380), (int) (0.05f * H), new Runnable() {
+                @Override public void run() { startAuto(); }
               });
-              ebtn = makeFloat("⏱ Đối thủ đi", 0xEE1565C0, Math.max(0, W - 380), (int) (0.05f * H) + 120, new Runnable() {
-                @Override public void run() { toggleWait(); }
+              rbtn = makeFloat("↻ Ván mới", 0xEEB71C1C, Math.max(0, W - 380), (int) (0.05f * H) + 120, new Runnable() {
+                @Override public void run() { if (autoPlay) newGame(); else startAuto(); }
               });
-              sbtn = makeFloat("🧩 Giải thế", 0xEE2E7D32, Math.max(0, W - 380), (int) (0.05f * H) + 240, new Runnable() {
-                @Override public void run() { solve(true); }
-              }, new Runnable() {
-                @Override public void run() { solve(false); }
-              });
-              showCalib();
+              bg.postDelayed(loop, 800);
               return START_NOT_STICKY;
             }
 
@@ -2199,7 +2262,7 @@ jobs:
               bgd.setCornerRadius(48);
               bgd.setStroke(3, 0xFFFFC107);
               bubble.setBackground(bgd);
-              bubble.setText("Căn lưới bàn cờ rồi bấm LƯU");
+              bubble.setText("Sẵn sàng");
               blp = new WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
                   WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                   WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
@@ -2223,10 +2286,6 @@ jobs:
                       if (moved) { blp.x = (int) (ox + mx); blp.y = (int) (oy + my); wm.updateViewLayout(bubble, blp); }
                       return true;
                     case MotionEvent.ACTION_UP:
-                      if (!moved) {
-                        if (System.currentTimeMillis() - t0 > 600) showCalib();
-                        else { hideArrow(); cancel = true; if (uci != null) uci.abort(); force = true; say("Đang đọc lại bàn cờ…", null); }
-                      }
                       return true;
                   }
                   return false;
@@ -2319,6 +2378,7 @@ jobs:
             // Ván mới: xoá toàn bộ trí nhớ, báo Pikafish bắt đầu ván mới và đọc/tính lại từ đầu
             void newGame() {
               if (!running) return;
+              autoGen++;
               loadMode();
               cancel = true;
               waiting = false;
@@ -2373,105 +2433,9 @@ jobs:
                   SpannableStringBuilder sb = new SpannableStringBuilder(big);
                   sb.setSpan(new RelativeSizeSpan(1.35f), 0, big.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                   sb.setSpan(new StyleSpan(Typeface.BOLD), 0, big.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                  if (small != null) sb.append("\n").append(small);
                   bubble.setText(sb);
                 }
               });
-            }
-
-            // ---------- Căn lưới ----------
-            class GridOverlay extends View {
-              final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-              final int[] loc = new int[2];
-              float lx, ly;
-              GridOverlay(Context c) { super(c); p.setStyle(Paint.Style.STROKE); }
-              @Override protected void onDraw(Canvas c) {
-                getLocationOnScreen(loc);
-                float ox = loc[0], oy = loc[1];
-                p.setStrokeWidth(2);
-                p.setColor(0xAA00FF00);
-                for (int r = 0; r < 10; r++)
-                  c.drawLine(g[0] - ox, g[1] + r * g[3] - oy, g[0] + 8 * g[2] - ox, g[1] + r * g[3] - oy, p);
-                for (int k = 0; k < 9; k++)
-                  c.drawLine(g[0] + k * g[2] - ox, g[1] - oy, g[0] + k * g[2] - ox, g[1] + 9 * g[3] - oy, p);
-                p.setStrokeWidth(3);
-                p.setColor(0xCCFFEB3B);
-                for (int r = 0; r < 10; r++) for (int k = 0; k < 9; k++)
-                  c.drawCircle(g[0] + k * g[2] - ox, g[1] + r * g[3] - oy, 0.45f * g[2], p);
-              }
-              @Override public boolean onTouchEvent(MotionEvent e) {
-                if (e.getAction() == MotionEvent.ACTION_DOWN) { lx = e.getRawX(); ly = e.getRawY(); return true; }
-                if (e.getAction() == MotionEvent.ACTION_MOVE) {
-                  g[0] += e.getRawX() - lx; g[1] += e.getRawY() - ly;
-                  lx = e.getRawX(); ly = e.getRawY();
-                  invalidate();
-                }
-                return true;
-              }
-            }
-
-            void showCalib() {
-              if (calibrating) return;
-              calibrating = true;
-              final GridOverlay gv = new GridOverlay(this);
-              calib = new FrameLayout(this);
-              calib.addView(gv, new FrameLayout.LayoutParams(-1, -1));
-              TextView tip = new TextView(this);
-              tip.setText("Kéo lưới cho các vòng vàng khớp từng quân cờ.\nW/H: chỉnh độ rộng/cao ô. Xong bấm LƯU.");
-              tip.setTextColor(Color.WHITE);
-              tip.setBackgroundColor(0xCC000000);
-              tip.setPadding(24, 24, 24, 24);
-              FrameLayout.LayoutParams tl = new FrameLayout.LayoutParams(-1, -2);
-              tl.gravity = Gravity.TOP;
-              calib.addView(tip, tl);
-              LinearLayout bar = new LinearLayout(this);
-              bar.setBackgroundColor(0xCC000000);
-              String[] names = {"W-", "W+", "H-", "H+", "LƯU"};
-              for (int k = 0; k < 5; k++) {
-                final int kk = k;
-                Button b = new Button(this);
-                b.setText(names[k]);
-                b.setOnClickListener(new View.OnClickListener() {
-                  @Override public void onClick(View v) {
-                    if (kk == 0) g[2] -= 1;
-                    else if (kk == 1) g[2] += 1;
-                    else if (kk == 2) g[3] -= 1;
-                    else if (kk == 3) g[3] += 1;
-                    else { saveCalib(); return; }
-                    gv.invalidate();
-                  }
-                });
-                bar.addView(b, new LinearLayout.LayoutParams(0, -2, 1));
-              }
-              FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(-1, -2);
-              bl.gravity = Gravity.BOTTOM;
-              calib.addView(bar, bl);
-              WindowManager.LayoutParams lp = new WindowManager.LayoutParams(-1, -1,
-                  WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                  WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                      | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                  PixelFormat.TRANSLUCENT);
-              if (Build.VERSION.SDK_INT >= 28)
-                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-              wm.addView(calib, lp);
-            }
-
-            void saveCalib() {
-              sp.edit().putFloat("x0", g[0]).putFloat("y0", g[1]).putFloat("sx", g[2]).putFloat("sy", g[3]).apply();
-              wm.removeView(calib);
-              calib = null;
-              last = null;
-              recog.reset();
-              prevOcc = "";
-              cur = null;
-              ponderBoard = null;
-              hideArrow();
-              waiting = false;
-              setWaitBtn(false);
-              calibrating = false;
-              say("Căn lưới xong", "Bấm \"↻ Ván mới\" để đọc bàn cờ\nSau mỗi nước của bạn: bấm nút xanh \"⏱ Đối thủ đi\"\n" + modeName() + " · " + engNote);
-              bg.removeCallbacks(loop);
-              bg.postDelayed(loop, 1200);
             }
 
             // ---------- Vòng lặp đọc bàn cờ ----------
@@ -2510,6 +2474,15 @@ jobs:
               }
               Bitmap bm = last;
               if (bm == null) return;
+              if (force) {
+                // Tự căn lưới theo thế xuất phát (app này không còn bước kéo lưới bằng tay)
+                float[] fr = recog.fitStartWide(bm, g);
+                if (fr != null) {
+                  System.arraycopy(fr, 0, g, 0, 4);
+                  sp.edit().putFloat("x0", g[0]).putFloat("y0", g[1]).putFloat("sx", g[2]).putFloat("sy", g[3]).apply();
+                  recog.reset();
+                }
+              }
               String occ = recog.scan(bm, g);
               if (force) {
                 force = false;
@@ -2715,9 +2688,9 @@ jobs:
               boolean flipMv = Math.abs(B[m >> 8]) == 9;
               String head = lastNote.isEmpty() ? "" : lastNote + "\n";
               String ev = r[3] > 0 ? eng.verdict(r[1]) + " · sâu " + r[2] + " · " + r[3] + " thế giả định" : "tính gấp (hết giờ)";
-              say("▶ " + Notation.viet(vb, m), head + Notation.sq(vb, m) + (flipMv ? " · LẬT QUÂN" : "") + "\n" + ev + " · Cờ úp"
-                  + "\nĐi xong bấm nút xanh \"Đối thủ đi\"");
+              say("Đang đi nước…", null);
               showArrow(m >> 8, m & 255);
+              autoMove(m >> 8, m & 255);
             }
 
             void suggestStd() {
@@ -2764,9 +2737,9 @@ jobs:
               if (r == null) { say("Hết nước đi", "Ván cờ đã kết thúc?"); return; }
               String chk = eng.gives(B, r[0]) ? " · CHIẾU!" : "";
               String head = lastNote.isEmpty() ? "" : lastNote + "\n";
-              say("▶ " + Notation.viet(B, r[0]), head + Notation.sq(B, r[0]) + chk + "\n" + eng.verdict(r[1]) + " · sâu " + r[2] + " · " + tag + "\nDự kiến: " + eng.line(B, 5)
-                  + "\nĐi xong bấm nút xanh \"Đối thủ đi\"");
+              say("Đang đi nước…", null);
               showArrow(r[0] >> 8, r[0] & 255);
+              autoMove(r[0] >> 8, r[0] & 255);
               if (pr != null && pr.best.length() >= 4) startPonder(B, pr);
             }
 
@@ -2787,197 +2760,84 @@ jobs:
               } catch (Throwable t) { ponderBoard = null; }
             }
 
-            // ---------- Mũi tên gợi ý ----------
-            class ArrowView extends View {
-              final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-              final int[] loc = new int[2];
-              int from = -1, to = -1;
-              ArrowView(Context c) { super(c); }
-              @Override protected void onDraw(Canvas c) {
-                if (from < 0 || to < 0) return;
-                getLocationOnScreen(loc);
-                float ox = loc[0], oy = loc[1];
-                float fx = g[0] + (from % 9) * g[2] - ox, fy = g[1] + (from / 9) * g[3] - oy;
-                float tx = g[0] + (to % 9) * g[2] - ox, ty = g[1] + (to / 9) * g[3] - oy;
-                float r = 0.40f * g[2];
-                double a = Math.atan2(ty - fy, tx - fx);
-                float ux = (float) Math.cos(a), uy = (float) Math.sin(a);
-                p.setStrokeCap(Paint.Cap.ROUND);
-                p.setStyle(Paint.Style.STROKE);
-                p.setStrokeWidth(g[2] * 0.07f);
-                p.setColor(0xFF00E676);
-                c.drawCircle(fx, fy, r, p);                 // ô quân đi
-                p.setStyle(Paint.Style.FILL);
-                p.setColor(0x6600E676);
-                c.drawCircle(tx, ty, r, p);                 // ô đến
-                p.setStyle(Paint.Style.STROKE);
-                p.setColor(0xFF00E676);
-                c.drawCircle(tx, ty, r, p);
-                float sx = fx + ux * r, sy = fy + uy * r, ex = tx - ux * r, ey = ty - uy * r;
-                if ((ex - sx) * ux + (ey - sy) * uy > g[2] * 0.1f) {
-                  p.setStrokeWidth(g[2] * 0.09f);
-                  c.drawLine(sx, sy, ex, ey, p);
-                  float hl = g[2] * 0.30f;
-                  for (int k = -1; k <= 1; k += 2) {
-                    double b = a + Math.PI + k * 0.5;
-                    c.drawLine(ex, ey, ex + (float) Math.cos(b) * hl, ey + (float) Math.sin(b) * hl, p);
-                  }
-                }
-              }
-            }
-
-            void showArrow(final int from, final int to) {
+            // ---------- Tự động đi nước (qua Dịch vụ Trợ năng) ----------
+            void setAuto(final boolean on) {
+              autoPlay = on;
+              autoGen++;
               ui.post(new Runnable() {
                 @Override public void run() {
-                  try {
-                    if (arrow == null) {
-                      arrow = new ArrowView(CaptureService.this);
-                      WindowManager.LayoutParams alp = new WindowManager.LayoutParams(-1, -1,
-                          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                              | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                          PixelFormat.TRANSLUCENT);
-                      if (Build.VERSION.SDK_INT >= 28)
-                        alp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-                      wm.addView(arrow, alp);
-                    }
-                    arrow.from = from;
-                    arrow.to = to;
-                    arrow.setVisibility(View.VISIBLE);
-                    arrow.invalidate();
-                  } catch (Throwable t) { }
+                  if (abtn == null) return;
+                  abtn.setText(on ? "■ Dừng" : "▶ Bắt đầu");
+                  ((GradientDrawable) abtn.getBackground()).setColor(on ? 0xEEE65100 : 0xEE2E7D32);
                 }
               });
             }
 
-            // Mũi tên nằm trong hình chụp màn hình nên phải ẩn trước khi quét bàn cờ
-            void hideArrow() {
-              arrowHiddenAt = System.currentTimeMillis();
-              ui.post(new Runnable() {
-                @Override public void run() { if (arrow != null) arrow.setVisibility(View.INVISIBLE); }
-              });
-            }
-
-            // Chờ hình màn hình cập nhật sau khi ẩn mũi tên rồi mới quét
-            void settleArrow() {
-              long w = 450 - (System.currentTimeMillis() - arrowHiddenAt);
-              if (w > 0) try { Thread.sleep(w); } catch (InterruptedException e) { }
-            }
-
-            // ---------- Giải thế cờ ----------
-            Bitmap grab() {
-              Image img = reader.acquireLatestImage();
-              if (img != null) {
-                Bitmap nb = toBmp(img);
-                img.close();
-                last = nb;
+            // Bắt đầu: đọc bàn cờ rồi tự đi, tự chờ đối thủ đi xong, cứ thế tới hết ván. Bấm lần nữa để dừng
+            void startAuto() {
+              if (!running) return;
+              if (autoPlay) { stopAuto(); return; }
+              if (AutoTapService.inst == null) {
+                say("Cần bật Trợ năng cho app", null);
+                try { startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); } catch (Throwable t) { }
+                return;
               }
-              return last;
+              setAuto(true);
+              newGame();
             }
 
-            // Đọc thế cờ đang hiện trên màn hình rồi tìm đường chiếu hết (hoặc nước tốt nhất) cho bên được chọn đi trước.
-            // Chạm nút = bên dưới đi trước; giữ nút = bên trên đi trước.
-            void solve(final boolean mineMoves) {
-              if (!running || calibrating) return;
-              loadMode();
-              if (dark) { say("Giải thế chỉ dùng ở Cờ thường", "Đổi chế độ ở màn hình chính của app"); return; }
+            void stopAuto() {
+              setAuto(false);
               cancel = true;
               waiting = false;
+              force = false;
               setWaitBtn(false);
               if (uci != null) uci.abort();
               hideArrow();
               ponderBoard = null;
-              say("Giải thế cờ…", "Đang đọc bàn cờ");
-              bg.post(new Runnable() {
+              say("Đã dừng", null);
+            }
+
+            // Chạm ô quân đi rồi ô đến, xong thì tự vào chế độ chờ đối thủ (như bấm nút xanh "Đối thủ đi")
+            void autoMove(final int from, final int to) {
+              if (!autoPlay) return;
+              final long gen = ++autoGen;
+              ui.postDelayed(new Runnable() {
                 @Override public void run() {
-                  try { doSolve(mineMoves); } catch (Throwable t) { say("Lỗi giải thế", String.valueOf(t)); }
+                  if (!autoPlay || gen != autoGen || cancel || waiting || !running || calibrating) return;
+                  final AutoTapService s = AutoTapService.inst;
+                  if (s == null) { setAuto(false); say("Trợ năng đã tắt, app dừng", null); return; }
+                  final float fx = g[0] + (from % 9) * g[2], fy = g[1] + (from / 9) * g[3];
+                  final float tx = g[0] + (to % 9) * g[2], ty = g[1] + (to / 9) * g[3];
+                  final Runnable fail = new Runnable() {
+                    @Override public void run() { say("Chạm không thành công", null); }
+                  };
+                  final Runnable finish = new Runnable() {
+                    @Override public void run() {
+                      ui.postDelayed(new Runnable() {
+                        @Override public void run() { if (gen == autoGen && autoPlay && !waiting) toggleWait(); }
+                      }, 500);
+                    }
+                  };
+                  s.tap(fx, fy, new Runnable() {
+                    @Override public void run() {
+                      if (from == to) { finish.run(); return; }
+                      ui.postDelayed(new Runnable() {
+                        @Override public void run() {
+                          if (gen != autoGen || !autoPlay) return;
+                          s.tap(tx, ty, finish, fail);
+                        }
+                      }, 400);
+                    }
+                  }, fail);
                 }
-              });
+              }, 800);
             }
 
-            void doSolve(boolean mineMoves) {
-              cancel = false;
-              force = false;
-              settleArrow();
-              Bitmap bm = grab();
-              if (bm == null) { say("Chưa có hình màn hình", "Đợi 1 giây rồi bấm lại"); return; }
-              recog.scan(bm, g);
-              int pieces = 0;
-              for (int i = 0; i < 90; i++) if (recog.occ[i] != 0) pieces++;
-              if (pieces < 3) { say("Chưa thấy bàn cờ", "Giữ bong bóng để căn lại lưới"); return; }
-              // Thế cờ lẻ quân có thể làm "màu đa số ở nửa dưới" sai: thử cả hai cách gán quân mình
-              int maj = recog.mineOcc;
-              int[] B = readBoard(bm, mineMoves, true);
-              if (B == null) { recog.mineOcc = 3 - maj; B = readBoard(bm, mineMoves, true); }
-              if (B == null) { recog.mineOcc = maj; B = readBoard(bm, mineMoves, false); if (B == null) return; }
-              mineC = recog.mineOcc;
-              cur = B.clone();
-              turnMine = mineMoves;
-              lastNote = "";
-              prevOcc = ""; stableN = 0; miss = 0;
-              final int[] BB = B.clone();
-              if ((uci == null || !uci.ready) && engTry < 3) {
-                engTry++;
-                say("Đang khởi động lại Pikafish…", null);
-                startEngine();
-              }
-              if (uci != null && uci.ready) {
-                say("Đang giải thế…", "Pikafish tính tối đa " + (SOLVE_MS / 1000) + " giây, thấy chiếu hết sẽ dừng sớm");
-                Uci.Res pr = uci.solve(Uci.fen(BB, mineMoves), SOLVE_MS, new Uci.Prog() {
-                  @Override public void on(Uci.Res r) {
-                    String s = r.mate ? (r.mateIn > 0 ? "Thấy chiếu hết sau " + r.mateIn + " nước" : "Bên đi sẽ bị chiếu hết sau " + (-r.mateIn) + " nước") : eng.verdict(r.cp);
-                    say("Đang giải thế… sâu " + r.depth, s);
-                  }
-                });
-                if (cancel) return;
-                if (pr.best.startsWith("(")) { say("Không có nước đi", "Thế này đã hết cờ (bị chiếu hết hoặc hết nước)"); return; }
-                if (pr.best.length() >= 4) { showSolution(BB, mineMoves, pr); return; }
-              }
-              // Dự phòng: engine Java (bên trên đi trước thì lật bàn cờ để bên đó thành "mình")
-              int[] sb = mineMoves ? BB : Engine.flip(BB);
-              say("Đang giải bằng engine dự phòng…", "Yếu hơn Pikafish, tối đa 20 giây");
-              int[] r = eng.best(sb, 20000);
-              if (cancel) return;
-              if (r == null) { say("Không có nước đi", "Thế này đã hết cờ?"); return; }
-              int mv = mineMoves ? r[0] : Engine.fm(r[0]);
-              showArrow(mv >> 8, mv & 255);
-              say("🧩 " + eng.verdict(r[1]), (mineMoves ? "Bên dưới" : "Bên trên") + " đi trước · sâu " + r[2] + "\n▶ " + Notation.viet(sb, r[0])
-                  + "\n" + eng.line(sb, 12) + "\nEngine dự phòng (Pikafish chưa chạy)");
-            }
-
-            void showSolution(int[] B, boolean mineMoves, Uci.Res pr) {
-              String title;
-              if (pr.mate && pr.mateIn > 0) title = "🧩 Thắng: chiếu hết sau " + pr.mateIn + " nước";
-              else if (pr.mate) title = "🧩 Bên đi sẽ bị chiếu hết sau " + (-pr.mateIn) + " nước";
-              else title = "🧩 Chưa thấy chiếu hết · " + eng.verdict(pr.cp);
-              String[] pv = (pr.pv.length > 0 && pr.pv[0].equals(pr.best)) ? pr.pv : new String[]{pr.best};
-              int m0 = Uci.parse(pr.best);
-              showArrow(m0 >> 8, m0 & 255);
-              String first = mineMoves ? Notation.viet(B, m0) : Notation.viet(Engine.flip(B), Engine.fm(m0));
-              String tail = (pr.mate && pr.mateIn > 0) ? "" : "\n(Thế hòa hoặc cần tính sâu hơn)";
-              say(title, (mineMoves ? "Bên dưới" : "Bên trên") + " đi trước · sâu " + pr.depth + "\n▶ " + first + "\n" + pvLine(B, pv, mineMoves, 24) + tail
-                  + (mineMoves ? "\nĐi xong bấm nút xanh \"Đối thủ đi\"" : ""));
-            }
-
-            // Biến chính bằng ký hiệu tiếng Việt, mỗi dòng một cặp nước (mỗi bên theo góc nhìn của chính nó)
-            String pvLine(int[] B0, String[] pv, boolean mineFirst, int max) {
-              StringBuilder sb = new StringBuilder();
-              int[] bb = B0.clone();
-              boolean mine = mineFirst;
-              for (int i = 0; i < pv.length && i < max; i++) {
-                if (pv[i].length() < 4) break;
-                int m = Uci.parse(pv[i]);
-                int p = bb[m >> 8];
-                if (p == 0 || (p > 0) != mine) break;
-                int[] vb = mine ? bb : Engine.flip(bb);
-                int vm = mine ? m : Engine.fm(m);
-                if (i % 2 == 0) { if (i > 0) sb.append("\n"); sb.append(i / 2 + 1).append(". "); } else sb.append("  ·  ");
-                sb.append(Notation.viet(vb, vm));
-                bb[m & 255] = bb[m >> 8]; bb[m >> 8] = 0;
-                mine = !mine;
-              }
-              return sb.toString();
-            }
+            // Không vẽ mũi tên chỉ hướng: các hàm này để trống (giữ tên để các chỗ gọi không phải đổi)
+            void showArrow(final int from, final int to) { }
+            void hideArrow() { }
+            void settleArrow() { }
 
             @Override public void onDestroy() {
               running = false;
@@ -2986,7 +2846,8 @@ jobs:
               try { if (rbtn != null) wm.removeView(rbtn); } catch (Exception e) { }
               try { if (ebtn != null) wm.removeView(ebtn); } catch (Exception e) { }
               try { if (sbtn != null) wm.removeView(sbtn); } catch (Exception e) { }
-              try { if (arrow != null) wm.removeView(arrow); } catch (Exception e) { }
+              try { if (abtn != null) wm.removeView(abtn); } catch (Exception e) { }
+              autoPlay = false;
               try { if (vd != null) vd.release(); } catch (Exception e) { }
               try { if (reader != null) reader.close(); } catch (Exception e) { }
               try { if (proj != null) proj.stop(); } catch (Exception e) { }
@@ -3099,5 +2960,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: CoTuongHelper-APK
+          name: CoTuongAuto-APK
           path: app/build/outputs/apk/debug/app-debug.apk

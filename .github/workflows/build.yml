@@ -3,6 +3,7 @@ name: Build APK Co Tuong Tu Dong
 # Tai file nay len GitHub tai: .github/workflows/build-auto.yml
 # Sau do vao tab Actions -> Build APK Co Tuong Tu Dong -> tai CoTuongAuto-APK o muc Artifacts.
 # App rieng (applicationId com.cotuong.auto), cai song song voi app Tro ly Co Tuong ban dau.
+# Ban nay chup man hinh qua Tro nang (Android 11+) thay vi quay man hinh (MediaProjection), de chay chung voi TikTok live.
 
 on:
   push:
@@ -80,7 +81,7 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
             <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
             <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
             <uses-permission android:name="android.permission.VIBRATE"/>
             <application android:label="Cờ Tướng Tự Động" android:theme="@android:style/Theme.DeviceDefault.Light">
@@ -90,7 +91,9 @@ jobs:
                   <category android:name="android.intent.category.LAUNCHER"/>
                 </intent-filter>
               </activity>
-              <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="mediaProjection"/>
+              <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="specialUse">
+                <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="chess_assistant"/>
+              </service>
               <service android:name=".AutoTapService" android:exported="false" android:label="Cờ Tướng Tự Động – tự chạm"
                   android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
                 <intent-filter>
@@ -108,6 +111,7 @@ jobs:
               android:accessibilityEventTypes="typeWindowStateChanged"
               android:accessibilityFeedbackType="feedbackGeneric"
               android:canPerformGestures="true"
+              android:canTakeScreenshot="true"
               android:canRequestFilterKeyEvents="true"
               android:accessibilityFlags="flagRequestFilterKeyEvents"
               android:description="@string/autotap_desc"
@@ -133,6 +137,10 @@ jobs:
           import android.os.Looper;
           import android.view.KeyEvent;
           import android.view.accessibility.AccessibilityEvent;
+          import android.graphics.Bitmap;
+          import android.os.Build;
+          import java.util.concurrent.CountDownLatch;
+          import java.util.concurrent.TimeUnit;
 
           // Dịch vụ Trợ năng: chỉ dùng để chạm vào một điểm trên màn hình khi CaptureService yêu cầu
           public class AutoTapService extends AccessibilityService {
@@ -202,6 +210,33 @@ jobs:
                 am.adjustSuggestedStreamVolume(up ? AudioManager.ADJUST_RAISE : AudioManager.ADJUST_LOWER,
                     AudioManager.USE_DEFAULT_STREAM_TYPE, AudioManager.FLAG_SHOW_UI);
               } catch (Throwable t) { }
+            }
+
+            // Chụp màn hình bằng Trợ năng (Android 11+): không cần quay màn hình nên không đụng hàng với TikTok.
+            // Gọi từ luồng nền (chặn tối đa 1,5 giây). Trả về null nếu chụp thất bại.
+            Bitmap shotSync() {
+              if (Build.VERSION.SDK_INT < 30) return null;
+              final Bitmap[] out = new Bitmap[1];
+              final CountDownLatch latch = new CountDownLatch(1);
+              try {
+                takeScreenshot(android.view.Display.DEFAULT_DISPLAY, getMainExecutor(), new AccessibilityService.TakeScreenshotCallback() {
+                  @Override public void onSuccess(AccessibilityService.ScreenshotResult r) {
+                    try {
+                      android.hardware.HardwareBuffer hb = r.getHardwareBuffer();
+                      Bitmap hw = Bitmap.wrapHardwareBuffer(hb, r.getColorSpace());
+                      if (hw != null) {
+                        out[0] = hw.copy(Bitmap.Config.ARGB_8888, false);
+                        hw.recycle();
+                      }
+                      hb.close();
+                    } catch (Throwable t) { }
+                    latch.countDown();
+                  }
+                  @Override public void onFailure(int code) { latch.countDown(); }
+                });
+                latch.await(1500, TimeUnit.MILLISECONDS);
+              } catch (Throwable t) { }
+              return out[0];
             }
 
             // Chạm 1 điểm (toạ độ màn hình). ok chạy khi chạm xong, fail chạy khi bị huỷ/không gửi được (cả hai chạy trên luồng chính)
@@ -2085,8 +2120,13 @@ jobs:
                     Toast.makeText(MainActivity.this, "Hãy bật Trợ năng ở nút 2 trước", Toast.LENGTH_LONG).show();
                     return;
                   }
-                  MediaProjectionManager m = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-                  startActivityForResult(m.createScreenCaptureIntent(), 7);
+                  if (Build.VERSION.SDK_INT < 30) {
+                    Toast.makeText(MainActivity.this, "Cần Android 11 trở lên để chụp màn hình qua Trợ năng", Toast.LENGTH_LONG).show();
+                    return;
+                  }
+                  Intent si = new Intent(MainActivity.this, CaptureService.class);
+                  startForegroundService(si);
+                  moveTaskToBack(true);
                 }
               }));
               l.addView(btn("Dừng", new View.OnClickListener() {
@@ -2206,7 +2246,7 @@ jobs:
             boolean turnMine = true;         // đang tới lượt mình?
             int mineC = 1;                   // màu của mình trên màn hình: 1 đỏ, 2 đen
             volatile boolean waiting, cancel;  // waiting: đang chờ đối thủ đi
-            int stableN = 0, miss = 0;
+            int stableN = 0, miss = 0, shotFail = 0;
             String lastNote = "";
             final float[] g = new float[4];   // x0, y0, bước ngang, bước dọc
             SharedPreferences sp;
@@ -2231,21 +2271,12 @@ jobs:
               if (in == null) return START_NOT_STICKY;
               String a = in.getAction();
               if ("STOP".equals(a)) { stopSelf(); return START_NOT_STICKY; }
-              if (proj != null) return START_NOT_STICKY;
+              if (running) return START_NOT_STICKY;
               startFg();
-              Intent data = in.getParcelableExtra("data");
-              MediaProjectionManager mpm = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-              proj = mpm.getMediaProjection(in.getIntExtra("rc", 0), data);
-              proj.registerCallback(new MediaProjection.Callback() {
-                @Override public void onStop() { stopSelf(); }
-              }, ui);
               DisplayMetrics dm = new DisplayMetrics();
               wm.getDefaultDisplay().getRealMetrics(dm);
               W = dm.widthPixels;
               H = dm.heightPixels;
-              reader = ImageReader.newInstance(W, H, PixelFormat.RGBA_8888, 2);
-              vd = proj.createVirtualDisplay("cap", W, H, dm.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                  reader.getSurface(), null, null);
               recog = new Recog();
               float sx = sp.getFloat("sx", 0.1075f * W);
               g[0] = sp.getFloat("x0", 0.0690f * W);
@@ -2328,7 +2359,7 @@ jobs:
               Notification n = new Notification.Builder(this, "c")
                   .setContentTitle("Trợ lý cờ tướng đang chạy")
                   .setSmallIcon(android.R.drawable.ic_menu_view).build();
-              if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+              if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
               else startForeground(1, n);
             }
 
@@ -2523,7 +2554,7 @@ jobs:
               @Override public void run() {
                 if (!running) return;
                 try { tick(); } catch (Throwable t) { say("Lỗi", String.valueOf(t)); }
-                bg.postDelayed(this, waiting ? 350 : 500);
+                bg.postDelayed(this, waiting ? 600 : 500);
               }
             };
 
@@ -2546,14 +2577,17 @@ jobs:
               if (calibrating) return;
               if (!force && !waiting) return;
               settleArrow();
-              Image img = reader.acquireLatestImage();
-              if (img != null) {
-                Bitmap nb = toBmp(img);
-                img.close();
-                last = nb;
+              AutoTapService ats = AutoTapService.inst;
+              if (ats == null) { say("Trợ năng đã tắt", "Bật lại Trợ năng cho app để chụp màn hình và tự chạm"); return; }
+              Bitmap nb = ats.shotSync();
+              if (nb == null) {
+                shotFail++;
+                if (shotFail == 4) say("Chưa chụp được màn hình", "Thử tắt rồi bật lại Trợ năng cho app");
+                return;
               }
-              Bitmap bm = last;
-              if (bm == null) return;
+              shotFail = 0;
+              last = nb;
+              Bitmap bm = nb;
               if (force && !gridLocked) {
                 // Tự căn lưới theo thế xuất phát (app này không còn bước kéo lưới bằng tay)
                 float[] fr = recog.fitStartWide(bm, g);

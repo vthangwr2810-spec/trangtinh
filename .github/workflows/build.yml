@@ -2122,7 +2122,8 @@ jobs:
             static final int SOLVE_MS = 30000;
             static final int PONDER_MS = 12000;
             volatile String engNote = "Đang nạp Pikafish…";
-            TextView rbtn, ebtn, sbtn, abtn;
+            TextView rbtn, ebtn, sbtn, abtn, lbtn;
+            volatile boolean gridLocked;     // true = đã cố định lưới bàn cờ: không tự căn/đổi lưới nữa
             volatile boolean autoPlay;       // tự chạm đi nước gợi ý (cần bật Trợ năng)
             volatile long autoGen;           // đổi số này để huỷ lần tự đi đang chờ
             int[] ponderBoard;               // thế Pikafish đang nghĩ trước (sau nước ta + nước đối thủ dự đoán)
@@ -2189,6 +2190,9 @@ jobs:
               });
               rbtn = makeFloat("↻ Ván mới", 0xEEB71C1C, Math.max(0, W - 380), (int) (0.05f * H) + 120, new Runnable() {
                 @Override public void run() { if (autoPlay) newGame(); else startAuto(); }
+              });
+              lbtn = makeFloat("🔒 Cố định lưới", 0xEE455A64, Math.max(0, W - 380), (int) (0.05f * H) + 240, new Runnable() {
+                @Override public void run() { toggleLock(); }
               });
               bg.postDelayed(loop, 800);
               return START_NOT_STICKY;
@@ -2474,7 +2478,7 @@ jobs:
               }
               Bitmap bm = last;
               if (bm == null) return;
-              if (force) {
+              if (force && !gridLocked) {
                 // Tự căn lưới theo thế xuất phát (app này không còn bước kéo lưới bằng tay)
                 float[] fr = recog.fitStartWide(bm, g);
                 if (fr != null) {
@@ -2591,6 +2595,7 @@ jobs:
 
             // Màn hình đang ở thế xuất phát nhưng lưới lệch: tự tìm lưới khớp rồi lưu lại. Trả về true nếu đã đổi lưới.
             boolean autoFit(Bitmap bm) {
+              if (gridLocked) return false;
               float[] r = recog.fitStart(bm, g);
               if (r == null) return false;
               boolean changed = false;
@@ -2786,7 +2791,30 @@ jobs:
               newGame();
             }
 
+            // Cố định lưới: sau khi app đã quét được bàn cờ, bấm để giữ nguyên lưới hiện tại,
+            // app không tự căn/quét lại lưới nữa cho tới khi bấm Dừng hoặc thoát ứng dụng
+            void setLock(final boolean on) {
+              gridLocked = on;
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  if (lbtn == null) return;
+                  lbtn.setText(on ? "🔓 Bỏ cố định" : "🔒 Cố định lưới");
+                  ((GradientDrawable) lbtn.getBackground()).setColor(on ? 0xEE00796B : 0xEE455A64);
+                }
+              });
+            }
+
+            void toggleLock() {
+              if (!running) return;
+              if (gridLocked) { setLock(false); say("Đã bỏ cố định lưới", null); return; }
+              if (cur == null) { say("Chưa quét được bàn cờ", null); return; }
+              sp.edit().putFloat("x0", g[0]).putFloat("y0", g[1]).putFloat("sx", g[2]).putFloat("sy", g[3]).apply();
+              setLock(true);
+              say("Đã cố định lưới", null);
+            }
+
             void stopAuto() {
+              setLock(false);
               setAuto(false);
               cancel = true;
               waiting = false;
@@ -2847,7 +2875,9 @@ jobs:
               try { if (ebtn != null) wm.removeView(ebtn); } catch (Exception e) { }
               try { if (sbtn != null) wm.removeView(sbtn); } catch (Exception e) { }
               try { if (abtn != null) wm.removeView(abtn); } catch (Exception e) { }
+              try { if (lbtn != null) wm.removeView(lbtn); } catch (Exception e) { }
               autoPlay = false;
+              gridLocked = false;
               try { if (vd != null) vd.release(); } catch (Exception e) { }
               try { if (reader != null) reader.close(); } catch (Exception e) { }
               try { if (proj != null) proj.stop(); } catch (Exception e) { }

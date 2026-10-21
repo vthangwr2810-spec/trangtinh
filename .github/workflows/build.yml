@@ -145,8 +145,8 @@ jobs:
             @Override public void onDestroy() { inst = null; super.onDestroy(); }
 
             // ---- Phím tắt bằng nút âm lượng (chỉ hoạt động khi app đang chạy) ----
-            // Giữ Tăng âm lượng 1 giây = Ván mới | giữ Giảm âm lượng 1 giây = Cố định/Bỏ cố định lưới | giữ cả hai = Dừng
-            // Bấm nhanh (không giữ) vẫn chỉnh âm lượng như bình thường.
+            // Giữ Tăng 1 giây = Ván mới | giữ Giảm 1 giây = hiện màn căn lưới (sau khi bấm LƯU: giữ Giảm = khoá; đã khoá: giữ Giảm = bỏ khoá) | giữ cả hai = Dừng
+            // Bấm nhanh vẫn chỉnh âm lượng như bình thường.
             static final long HOLD_MS = 1000;
             final Handler kh = new Handler(Looper.getMainLooper());
             boolean upDown, dnDown, chord, fired;
@@ -2039,7 +2039,7 @@ jobs:
               TextView keys = new TextView(this);
               keys.setTextSize(14);
               keys.setPadding(0, 0, 0, 16);
-              keys.setText("Phím tắt sau khi bấm nút 3:\n• Giữ Tăng âm lượng 1 giây: Ván mới (rung 1 lần dài)\n• Giữ Giảm âm lượng 1 giây: Cố định / bỏ cố định lưới (rung 2 lần / 1 lần ngắn)\n• Giữ cả hai nút 1 giây: Dừng (rung 3 lần ngắn)");
+              keys.setText("Phím tắt sau khi bấm nút 3:\n• Giữ Tăng âm lượng 1 giây: Ván mới\n• Giữ Giảm âm lượng 1 giây: hiện màn căn lưới; chỉnh bằng tay rồi bấm LƯU; giữ Giảm lần nữa để KHOÁ (đã khoá thì giữ Giảm để bỏ khoá)\n• Giữ cả hai nút 1 giây: Dừng (đang căn thì hủy căn)");
               l.addView(keys);
               RadioGroup rg = new RadioGroup(this);
               RadioButton rn = new RadioButton(this);
@@ -2889,6 +2889,118 @@ jobs:
               say("Đã cố định lưới", null);
             }
 
+            // ---------- Căn lưới bằng tay (giống app đầu) ----------
+            // Giữ Giảm âm lượng 1 giây: hiện màn căn lưới -> kéo/chỉnh W,H -> bấm LƯU -> giữ Giảm lần nữa để KHOÁ
+            float[] gBackup;
+            volatile boolean gridSaved;     // đã bấm LƯU, lần giữ Giảm tiếp theo sẽ khoá lưới
+
+            class GridOverlay extends View {
+              final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              final int[] loc = new int[2];
+              float lx, ly;
+              GridOverlay(Context c) { super(c); p.setStyle(Paint.Style.STROKE); }
+              @Override protected void onDraw(Canvas c) {
+                getLocationOnScreen(loc);
+                float ox = loc[0], oy = loc[1];
+                p.setStrokeWidth(2);
+                p.setColor(0xAA00FF00);
+                for (int r = 0; r < 10; r++)
+                  c.drawLine(g[0] - ox, g[1] + r * g[3] - oy, g[0] + 8 * g[2] - ox, g[1] + r * g[3] - oy, p);
+                for (int k = 0; k < 9; k++)
+                  c.drawLine(g[0] + k * g[2] - ox, g[1] - oy, g[0] + k * g[2] - ox, g[1] + 9 * g[3] - oy, p);
+                p.setStrokeWidth(3);
+                p.setColor(0xCCFFEB3B);
+                for (int r = 0; r < 10; r++) for (int k = 0; k < 9; k++)
+                  c.drawCircle(g[0] + k * g[2] - ox, g[1] + r * g[3] - oy, 0.45f * g[2], p);
+              }
+              @Override public boolean onTouchEvent(MotionEvent e) {
+                if (e.getAction() == MotionEvent.ACTION_DOWN) { lx = e.getRawX(); ly = e.getRawY(); return true; }
+                if (e.getAction() == MotionEvent.ACTION_MOVE) {
+                  g[0] += e.getRawX() - lx; g[1] += e.getRawY() - ly;
+                  lx = e.getRawX(); ly = e.getRawY();
+                  invalidate();
+                }
+                return true;
+              }
+            }
+
+            void showCalib() {
+              if (calibrating) return;
+              calibrating = true;
+              gridSaved = false;
+              gBackup = g.clone();
+              final GridOverlay gv = new GridOverlay(this);
+              calib = new FrameLayout(this);
+              calib.addView(gv, new FrameLayout.LayoutParams(-1, -1));
+              TextView tip = new TextView(this);
+              tip.setText("Kéo lưới cho các vòng vàng khớp từng quân cờ.\nW/H: chỉnh độ rộng/cao ô. Xong bấm LƯU.");
+              tip.setTextColor(Color.WHITE);
+              tip.setBackgroundColor(0xCC000000);
+              tip.setPadding(24, 24, 24, 24);
+              FrameLayout.LayoutParams tl = new FrameLayout.LayoutParams(-1, -2);
+              tl.gravity = Gravity.TOP;
+              calib.addView(tip, tl);
+              LinearLayout bar = new LinearLayout(this);
+              bar.setBackgroundColor(0xCC000000);
+              String[] names = {"W-", "W+", "H-", "H+", "LƯU"};
+              for (int k = 0; k < 5; k++) {
+                final int kk = k;
+                Button b = new Button(this);
+                b.setText(names[k]);
+                b.setOnClickListener(new View.OnClickListener() {
+                  @Override public void onClick(View v) {
+                    if (kk == 0) g[2] -= 1;
+                    else if (kk == 1) g[2] += 1;
+                    else if (kk == 2) g[3] -= 1;
+                    else if (kk == 3) g[3] += 1;
+                    else { saveCalib(); return; }
+                    gv.invalidate();
+                  }
+                });
+                bar.addView(b, new LinearLayout.LayoutParams(0, -2, 1));
+              }
+              FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(-1, -2);
+              bl.gravity = Gravity.BOTTOM;
+              calib.addView(bar, bl);
+              WindowManager.LayoutParams lp = new WindowManager.LayoutParams(-1, -1,
+                  WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                  WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                      | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                  PixelFormat.TRANSLUCENT);
+              if (Build.VERSION.SDK_INT >= 28)
+                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+              try { wm.addView(calib, lp); } catch (Throwable t) { calib = null; calibrating = false; buzz(3); return; }
+              buzz(5);
+            }
+
+            void saveCalib() {
+              sp.edit().putFloat("x0", g[0]).putFloat("y0", g[1]).putFloat("sx", g[2]).putFloat("sy", g[3]).apply();
+              try { if (calib != null) wm.removeView(calib); } catch (Throwable t) { }
+              calib = null;
+              last = null;
+              recog.reset();
+              prevOcc = "";
+              cur = null;
+              ponderBoard = null;
+              hideArrow();
+              waiting = false;
+              setWaitBtn(false);
+              calibrating = false;
+              gridSaved = true;
+              buzz(2);
+              bg.removeCallbacks(loop);
+              bg.postDelayed(loop, 1200);
+            }
+
+            // Giữ cả hai nút khi đang căn: bỏ căn, trả lưới về như trước
+            void cancelCalib() {
+              if (!calibrating) return;
+              if (gBackup != null) System.arraycopy(gBackup, 0, g, 0, 4);
+              try { if (calib != null) wm.removeView(calib); } catch (Throwable t) { }
+              calib = null;
+              calibrating = false;
+            }
+
             // ---------- Phím tắt bằng nút âm lượng + rung báo (AutoTapService gọi sang) ----------
             // kind: 0 = ván mới, 1 = đã cố định lưới, 2 = bỏ cố định, 3 = không làm được, 4 = dừng
             void buzz(int kind) {
@@ -2900,6 +3012,12 @@ jobs:
                 else if (kind == 1) t = new long[]{0, 120, 100, 120};
                 else if (kind == 2) t = new long[]{0, 120};
                 else if (kind == 3) t = new long[]{0, 700};
+                else if (kind == 5) t = new long[]{0, 250, 120, 250};
+                else if (kind >= 11 && kind <= 13) {
+                  int n = kind - 10;
+                  t = new long[n * 2];
+                  for (int i = 0; i < n; i++) { t[i * 2] = (i == 0) ? 0 : 100; t[i * 2 + 1] = 120; }
+                }
                 else t = new long[]{0, 120, 100, 120, 100, 120};
                 v.vibrate(android.os.VibrationEffect.createWaveform(t, -1));
               } catch (Throwable e) { }
@@ -2909,6 +3027,7 @@ jobs:
               ui.post(new Runnable() {
                 @Override public void run() {
                   if (!running) return;
+                  if (calibrating) { buzz(3); return; }
                   if (AutoTapService.inst == null) { buzz(3); return; }
                   buzz(0);
                   if (autoPlay) newGame(); else startAuto();
@@ -2920,9 +3039,10 @@ jobs:
               ui.post(new Runnable() {
                 @Override public void run() {
                   if (!running) return;
-                  boolean was = gridLocked;
-                  toggleLock();
-                  if (gridLocked == was) buzz(3); else buzz(gridLocked ? 1 : 2);
+                  if (calibrating) { saveCalib(); setLock(true); buzz(1); return; }   // quên bấm LƯU thì giữ Giảm = lưu + khoá
+                  if (gridLocked) { setLock(false); gridSaved = false; buzz(2); return; }
+                  if (gridSaved) { setLock(true); buzz(1); return; }
+                  showCalib();
                 }
               });
             }
@@ -2931,6 +3051,7 @@ jobs:
               ui.post(new Runnable() {
                 @Override public void run() {
                   if (!running) return;
+                  if (calibrating) { cancelCalib(); buzz(4); return; }
                   if (autoPlay) stopAuto();
                   buzz(4);
                 }
@@ -2938,6 +3059,8 @@ jobs:
             }
 
             void stopAuto() {
+              cancelCalib();
+              gridSaved = false;
               setLock(false);
               setAuto(false);
               cancel = true;

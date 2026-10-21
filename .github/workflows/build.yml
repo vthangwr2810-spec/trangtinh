@@ -82,6 +82,7 @@ jobs:
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
             <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+            <uses-permission android:name="android.permission.VIBRATE"/>
             <application android:label="Cờ Tướng Tự Động" android:theme="@android:style/Theme.DeviceDefault.Light">
               <activity android:name=".MainActivity" android:exported="true">
                 <intent-filter>
@@ -107,6 +108,8 @@ jobs:
               android:accessibilityEventTypes="typeWindowStateChanged"
               android:accessibilityFeedbackType="feedbackGeneric"
               android:canPerformGestures="true"
+              android:canRequestFilterKeyEvents="true"
+              android:accessibilityFlags="flagRequestFilterKeyEvents"
               android:description="@string/autotap_desc"
               android:notificationTimeout="100"/>
           EOF
@@ -122,8 +125,13 @@ jobs:
 
           import android.accessibilityservice.AccessibilityService;
           import android.accessibilityservice.GestureDescription;
+          import android.content.Context;
           import android.content.Intent;
           import android.graphics.Path;
+          import android.media.AudioManager;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.view.KeyEvent;
           import android.view.accessibility.AccessibilityEvent;
 
           // Dịch vụ Trợ năng: chỉ dùng để chạm vào một điểm trên màn hình khi CaptureService yêu cầu
@@ -135,6 +143,66 @@ jobs:
             @Override public void onInterrupt() { }
             @Override public boolean onUnbind(Intent i) { inst = null; return super.onUnbind(i); }
             @Override public void onDestroy() { inst = null; super.onDestroy(); }
+
+            // ---- Phím tắt bằng nút âm lượng (chỉ hoạt động khi app đang chạy) ----
+            // Giữ Tăng âm lượng 1 giây = Ván mới | giữ Giảm âm lượng 1 giây = Cố định/Bỏ cố định lưới | giữ cả hai = Dừng
+            // Bấm nhanh (không giữ) vẫn chỉnh âm lượng như bình thường.
+            static final long HOLD_MS = 1000;
+            final Handler kh = new Handler(Looper.getMainLooper());
+            boolean upDown, dnDown, chord, fired;
+            Runnable pend;
+
+            @Override protected boolean onKeyEvent(KeyEvent e) {
+              int k = e.getKeyCode();
+              if (k != KeyEvent.KEYCODE_VOLUME_UP && k != KeyEvent.KEYCODE_VOLUME_DOWN) return false;
+              CaptureService cs = CaptureService.inst;
+              if (cs == null || !cs.running) { resetKeys(); return false; }   // app chưa chạy: nút âm lượng làm việc bình thường
+              boolean up = (k == KeyEvent.KEYCODE_VOLUME_UP);
+              if (e.getAction() == KeyEvent.ACTION_DOWN) {
+                if (e.getRepeatCount() > 0) return true;
+                if (up) upDown = true; else dnDown = true;
+                if (!fired) arm();
+                return true;
+              }
+              if (e.getAction() == KeyEvent.ACTION_UP) {
+                boolean shortPress = (pend != null) && !fired && !chord;
+                if (pend != null) { kh.removeCallbacks(pend); pend = null; }
+                if (up) upDown = false; else dnDown = false;
+                if (shortPress) adjust(up);
+                if (!upDown && !dnDown) { fired = false; chord = false; }
+                return true;
+              }
+              return true;
+            }
+
+            void arm() {
+              if (pend != null) kh.removeCallbacks(pend);
+              if (upDown && dnDown) chord = true;
+              final int what = chord ? 2 : (upDown ? 0 : 1);
+              pend = new Runnable() {
+                @Override public void run() {
+                  pend = null;
+                  fired = true;
+                  CaptureService cs = CaptureService.inst;
+                  if (cs == null) return;
+                  if (what == 0) cs.hotNew(); else if (what == 1) cs.hotLock(); else cs.hotStop();
+                }
+              };
+              kh.postDelayed(pend, HOLD_MS);
+            }
+
+            void resetKeys() {
+              if (pend != null) { kh.removeCallbacks(pend); pend = null; }
+              upDown = false; dnDown = false; chord = false; fired = false;
+            }
+
+            void adjust(boolean up) {
+              try {
+                AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                am.adjustSuggestedStreamVolume(up ? AudioManager.ADJUST_RAISE : AudioManager.ADJUST_LOWER,
+                    AudioManager.USE_DEFAULT_STREAM_TYPE, AudioManager.FLAG_SHOW_UI);
+              } catch (Throwable t) { }
+            }
 
             // Chạm 1 điểm (toạ độ màn hình). ok chạy khi chạm xong, fail chạy khi bị huỷ/không gửi được (cả hai chạy trên luồng chính)
             boolean tap(float x, float y, final Runnable ok, final Runnable fail) {
@@ -1968,6 +2036,11 @@ jobs:
               status.setTextSize(14);
               status.setPadding(0, 16, 0, 16);
               l.addView(status);
+              TextView keys = new TextView(this);
+              keys.setTextSize(14);
+              keys.setPadding(0, 0, 0, 16);
+              keys.setText("Phím tắt sau khi bấm nút 3:\n• Giữ Tăng âm lượng 1 giây: Ván mới (rung 1 lần dài)\n• Giữ Giảm âm lượng 1 giây: Cố định / bỏ cố định lưới (rung 2 lần / 1 lần ngắn)\n• Giữ cả hai nút 1 giây: Dừng (rung 3 lần ngắn)");
+              l.addView(keys);
               RadioGroup rg = new RadioGroup(this);
               RadioButton rn = new RadioButton(this);
               rn.setId(101);
@@ -2118,6 +2191,8 @@ jobs:
             int[][] pool = DarkEngine.fullPool();        // số quân chưa lộ của mỗi bên: [0] mình, [1] đối thủ
             int ocrFail = 0;
             Uci uci;
+            static volatile CaptureService inst;          // để AutoTapService gọi phím tắt
+            static final boolean SHOW_BUBBLES = false;    // false = ẩn 4 bong bóng, điều khiển bằng nút âm lượng
             static final int THINK_MS = 8000;
             static final int SOLVE_MS = 30000;
             static final int PONDER_MS = 12000;
@@ -2143,6 +2218,7 @@ jobs:
 
             @Override public void onCreate() {
               super.onCreate();
+              inst = this;
               ui = new Handler(Looper.getMainLooper());
               ht = new HandlerThread("cap");
               ht.start();
@@ -2295,7 +2371,7 @@ jobs:
                   return false;
                 }
               });
-              wm.addView(bubble, blp);
+              if (SHOW_BUBBLES) wm.addView(bubble, blp);
             }
 
             // Nút nổi kéo được; chạm = chạy onTap
@@ -2343,7 +2419,7 @@ jobs:
                   return false;
                 }
               });
-              wm.addView(tv, lp);
+              if (SHOW_BUBBLES) wm.addView(tv, lp);
               return tv;
             }
 
@@ -2813,6 +2889,54 @@ jobs:
               say("Đã cố định lưới", null);
             }
 
+            // ---------- Phím tắt bằng nút âm lượng + rung báo (AutoTapService gọi sang) ----------
+            // kind: 0 = ván mới, 1 = đã cố định lưới, 2 = bỏ cố định, 3 = không làm được, 4 = dừng
+            void buzz(int kind) {
+              try {
+                android.os.Vibrator v = (android.os.Vibrator) getSystemService(VIBRATOR_SERVICE);
+                if (v == null) return;
+                long[] t;
+                if (kind == 0) t = new long[]{0, 350};
+                else if (kind == 1) t = new long[]{0, 120, 100, 120};
+                else if (kind == 2) t = new long[]{0, 120};
+                else if (kind == 3) t = new long[]{0, 700};
+                else t = new long[]{0, 120, 100, 120, 100, 120};
+                v.vibrate(android.os.VibrationEffect.createWaveform(t, -1));
+              } catch (Throwable e) { }
+            }
+
+            void hotNew() {
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  if (!running) return;
+                  if (AutoTapService.inst == null) { buzz(3); return; }
+                  buzz(0);
+                  if (autoPlay) newGame(); else startAuto();
+                }
+              });
+            }
+
+            void hotLock() {
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  if (!running) return;
+                  boolean was = gridLocked;
+                  toggleLock();
+                  if (gridLocked == was) buzz(3); else buzz(gridLocked ? 1 : 2);
+                }
+              });
+            }
+
+            void hotStop() {
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  if (!running) return;
+                  if (autoPlay) stopAuto();
+                  buzz(4);
+                }
+              });
+            }
+
             void stopAuto() {
               setLock(false);
               setAuto(false);
@@ -2869,6 +2993,7 @@ jobs:
 
             @Override public void onDestroy() {
               running = false;
+              inst = null;
               try { if (bubble != null) wm.removeView(bubble); } catch (Exception e) { }
               try { if (calib != null) wm.removeView(calib); } catch (Exception e) { }
               try { if (rbtn != null) wm.removeView(rbtn); } catch (Exception e) { }

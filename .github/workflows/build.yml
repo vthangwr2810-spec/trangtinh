@@ -2050,11 +2050,16 @@ jobs:
           class GameLog {
             static File logFile(Context c) { return new File(c.getFilesDir(), "gamelog.txt"); }
             static File audioFile(Context c) { return new File(c.getFilesDir(), "commentary.wav"); }
+            // Lời bình dạng chữ: textFile = bản đang hiển thị (có thể đã được người dùng sửa), autoFile = bản app tự soạn gần nhất
+            static File textFile(Context c) { return new File(c.getFilesDir(), "commentary_text.txt"); }
+            static File autoFile(Context c) { return new File(c.getFilesDir(), "commentary_auto.txt"); }
 
             // Bắt đầu ván mới: xoá lịch sử và âm thanh của ván cũ
             static synchronized void clear(Context c) {
               logFile(c).delete();
               audioFile(c).delete();
+              textFile(c).delete();
+              autoFile(c).delete();
             }
 
             static void add(Context c, boolean mine, String move, String cap, boolean hasEval, int eval) {
@@ -2220,89 +2225,153 @@ jobs:
           package com.cotuong.helper;
 
           import java.util.ArrayList;
-          import java.util.IdentityHashMap;
+          import java.util.HashMap;
           import java.util.List;
           import java.util.Random;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
 
           // Soạn lời bình tiếng Việt (giọng "mình" và "đối thủ") từ lịch sử nước đi của ván.
-          // Tùy chọn (MainActivity đặt trước khi soạn): level = độ dài, tone = giọng điệu, risk = có đọc phần mặt hại không.
+          // Tùy chọn (MainActivity đặt trước khi soạn): level = độ dài, tone = giọng điệu, risk = có nói phần mặt hại không.
           //   level 0 Ngắn: nước đi, quân bị ăn, chiếu tướng, đổi thế cờ, tổng kết gọn
-          //   level 1 Vừa : thêm 1 lý do chính + 1 mặt hại (nếu bật), tổng kết đầy đủ
+          //   level 1 Vừa : thêm 1 lý do chính + 1 mặt hại (nếu bật), nhận định thế cờ, tổng kết đầy đủ
           //   level 2 Sâu : đủ lý do, mặt lợi - mặt hại, dự tính, đánh giá nước của đối thủ
+          // Kết quả là danh sách đoạn văn (mỗi đoạn ~ một cặp nước đi), người dùng có thể sửa tay trước khi tạo âm thanh.
           class Commentary {
             static final String[] NUM = {"không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"};
 
             static int level = 1;        // 0 ngắn · 1 vừa · 2 sâu
             static int tone = 0;         // 0 nghiêm túc · 1 hài hước
-            static boolean risk = true;  // đọc phần mặt hại
+            static boolean risk = true;  // nói phần mặt hại
 
             static final Random rnd = new Random();
-            static final IdentityHashMap<String[], Integer> last = new IdentityHashMap<String[], Integer>();
+            static final HashMap<String, Integer> used = new HashMap<String, Integer>();    // lần cuối dùng mỗi câu
+            static final HashMap<String, Integer> clocks = new HashMap<String, Integer>();  // đồng hồ riêng của từng nhóm câu
+            static final HashMap<String, Integer> tagAt = new HashMap<String, Integer>();   // nước đi gần nhất đã nói về từng chủ đề
 
-            // Chọn ngẫu nhiên một câu, tránh lặp lại đúng câu vừa dùng của cùng nhóm
-            static String pick(String[] a) {
-              int i = rnd.nextInt(a.length);
-              Integer l = last.get(a);
-              if (a.length > 1 && l != null && l.intValue() == i) i = (i + 1) % a.length;
-              last.put(a, i);
-              return a[i];
+            // Chọn một câu trong nhóm: không dùng lại câu đã dùng trong vài lần gần nhất của chính nhóm đó
+            static String pick(String... a) {
+              if (a.length == 1) return a[0];
+              String pool = a[0] + "#" + a.length;
+              Integer c0 = clocks.get(pool);
+              int ck = (c0 == null ? 0 : c0.intValue()) + 1;
+              clocks.put(pool, ck);
+              int gap = Math.min(a.length - 1, 6);
+              ArrayList<String> ok = new ArrayList<String>();
+              String oldest = a[0];
+              int oldAt = Integer.MAX_VALUE;
+              for (String s : a) {
+                Integer u = used.get(pool + "|" + s);
+                int at = u == null ? -1000 : u.intValue();
+                if (ck - at > gap) ok.add(s);
+                if (at < oldAt) { oldAt = at; oldest = s; }
+              }
+              String r = ok.isEmpty() ? oldest : ok.get(rnd.nextInt(ok.size()));
+              used.put(pool + "|" + r, ck);
+              return r;
             }
 
             // Chọn theo giọng điệu đang dùng: t[0] nghiêm túc, t[1] hài hước
             static String pick(String[][] t) { return pick(t[tone == 1 ? 1 : 0]); }
 
-            static String v(String... s) { return s[rnd.nextInt(s.length)]; }
+            // Giọng hài hước thì trộn thêm câu đùa vào nhóm câu nghiêm túc
+            static String[] mix(String[] s, String[] h) {
+              if (tone != 1 || h == null || h.length == 0) return s;
+              String[] r = new String[s.length + h.length];
+              System.arraycopy(s, 0, r, 0, s.length);
+              System.arraycopy(h, 0, r, s.length, h.length);
+              return r;
+            }
 
             static String tn(String serious, String humor) { return tone == 1 ? humor : serious; }
 
-            // ---------- Kho câu mẫu: [0] nghiêm túc, [1] hài hước ----------
+            static String lc(String s) { return s.length() == 0 ? s : Character.toLowerCase(s.charAt(0)) + s.substring(1); }
+
+            // Chủ đề đã nói cách đây chưa đủ xa thì bỏ qua (tránh nhắc đi nhắc lại cùng một ý)
+            static boolean canUse(boolean mine, String tag, int i, int gap) {
+              if (level >= 2) gap = Math.max(2, gap * 2 / 3);
+              Integer at = tagAt.get((mine ? "m" : "o") + tag);
+              return at == null || i - at.intValue() >= gap;
+            }
+
+            static void mark(boolean mine, String tag, int i) { tagAt.put((mine ? "m" : "o") + tag, i); }
+
+            // ---------- Kho câu mẫu ----------
             static final String[][] INTRO = {
-              {"Chào mọi người. Đây là lời bình ván cờ tướng vừa rồi, gồm %n nước đi.",
-               "Xin chào mọi người. Cùng nhìn lại ván cờ tướng vừa rồi, tất cả %n nước đi.",
-               "Chào mọi người, sau đây là phần bình luận cho ván cờ tướng gồm %n nước đi."},
+              {"Chào mọi người. Sau đây là phần bình luận ván cờ tướng vừa rồi, gồm %n nước đi.",
+               "Xin chào mọi người. Chúng ta cùng nhìn lại ván cờ tướng vừa diễn ra, với tổng cộng %n nước đi.",
+               "Chào mọi người, hôm nay mình xin bình lại ván cờ tướng vừa chơi, gồm %n nước đi."},
               {"Xin chào cả nhà! Cùng xem lại ván cờ tướng vừa rồi, tổng cộng %n nước đi nhé.",
                "Chào cả nhà, ván cờ tướng hôm nay có %n nước đi, vào xem thôi.",
                "A lô a lô, ván cờ có %n nước đi đã sẵn sàng, cả nhà ngồi cho vững nhé."}
             };
 
             static final String[][] OUTRO = {
-              {"Cảm ơn mọi người đã xem. Hẹn gặp lại ở ván sau.",
-               "Cảm ơn đã theo dõi. Hẹn mọi người ở ván tiếp theo.",
-               "Đến đây là hết ván cờ. Cảm ơn mọi người và hẹn gặp lại."},
+              {"Cảm ơn mọi người đã theo dõi. Hẹn gặp lại ở ván cờ tiếp theo.",
+               "Đến đây là hết ván cờ. Cảm ơn mọi người đã xem, hẹn gặp lại.",
+               "Cảm ơn mọi người đã đồng hành cùng ván cờ này. Hẹn gặp lại ở những ván sau."},
               {"Cảm ơn cả nhà đã xem. Nhớ theo dõi để xem ván sau mình thắng đẹp cỡ nào nhé!",
                "Hết ván rồi, cảm ơn cả nhà. Hẹn gặp lại ở ván sau, đừng quên theo dõi nhé.",
                "Xong ván rồi, cảm ơn cả nhà. Nhớ ghé lại, ván sau còn hay hơn nữa."}
             };
 
-            static final String[][] MINE_MOVE = {
-              {"Mình đi %s.", "Tiếp theo, mình đi %s.", "Mình tiếp tục với %s.", "Bên mình chọn %s.", "Mình đưa ra nước %s.",
-               "Đến lượt mình, mình chọn %s.", "Mình quyết định đi %s.", "Mình triển khai tiếp bằng %s."},
-              {"Mình xin phép đi %s nhé.", "Mình tung chiêu %s.", "Mình ra tay với %s, nhẹ nhàng thôi.",
-               "Đến lượt mình, mình đi %s cho đối thủ đau đầu.", "Mình thử %s xem sao.", "Hít sâu một hơi, mình đi %s.",
-               "Mình bày thêm một nước %s."}
-            };
+            static final String[] MINE_OPEN = {"Mình mở đầu ván cờ bằng %s.", "Mình khai cuộc với %s.", "Nước đi đầu tiên của mình là %s."};
+            static final String[] OPP_OPEN = {"Đối thủ mở đầu ván cờ bằng %s.", "Đối thủ khai cuộc với %s.", "Nước đi đầu tiên của đối thủ là %s."};
+            static final String[] MINE_OPEN_H = {"Mình xin mạn phép khai cuộc với %s."};
+            static final String[] OPP_OPEN_H = {"Đối thủ khai cuộc bằng %s, ván cờ bắt đầu rồi đây."};
 
-            static final String[][] OPP_MOVE = {
-              {"Đối thủ đáp lại bằng %s.", "Đối thủ đi %s.", "Phía đối thủ chọn %s.", "Đối thủ phản công với %s.",
-               "Đối thủ đi tiếp %s.", "Đối thủ chọn nước %s.", "Đối thủ đưa ra %s.", "Bên kia trả lời bằng %s."},
-              {"Đối thủ lại ra chiêu %s.", "Đối thủ đi %s, không biết tính gì đây.", "Đối thủ bất ngờ đi %s.",
-               "Đối thủ nghĩ mãi rồi cũng đi %s.", "Bên kia đáp lễ bằng %s.", "Đối thủ vừa đi %s, nghe có vẻ nguy hiểm.",
-               "Đối thủ chơi %s, mình ghi nhận."}
-            };
+            static final String[] MINE_MOVE = {
+              "Mình đi %s.", "Tiếp theo, mình chọn %s.", "Mình tiếp tục với %s.", "Bên mình đáp lại bằng %s.",
+              "Mình quyết định đi %s.", "Mình triển khai tiếp với nước %s.", "Lượt đi của mình là %s.",
+              "Mình chọn %s ở nước này.", "Đến lượt mình, nước đi là %s.", "Mình phản ứng bằng %s."};
+            static final String[] MINE_MOVE_H = {
+              "Mình tung chiêu %s.", "Mình thử %s xem sao.", "Hít sâu một hơi, mình đi %s.", "Mình bày thêm một nước %s."};
+            static final String[] OPP_MOVE = {
+              "Đối thủ đáp lại bằng %s.", "Đối thủ đi %s.", "Phía đối thủ chọn %s.", "Đối thủ phản ứng bằng %s.",
+              "Đối thủ tiếp tục với %s.", "Đối thủ đưa ra nước %s.", "Bên kia trả lời bằng %s.",
+              "Nước đáp trả của đối thủ là %s.", "Đối thủ lựa chọn %s.", "Lượt tiếp theo, đối thủ đi %s."};
+            static final String[] OPP_MOVE_H = {
+              "Đối thủ lại ra chiêu %s.", "Đối thủ đi %s, không biết tính gì đây.", "Đối thủ bất ngờ đi %s.",
+              "Bên kia đáp lễ bằng %s."};
 
-            static final String[][] MINE_CAP = {
-              {"Nước này ăn %s của đối thủ.", "Mình thu về %s của đối thủ.", "Ăn được %s của đối thủ.",
-               "Mình lấy được %s của đối thủ.", "Mình bắt gọn %s của đối thủ."},
-              {"Xin lỗi nhé, mình mượn %s của đối thủ.", "Ăn gọn %s, cảm ơn đã gửi quân.", "%s của đối thủ giờ thuộc về mình.",
-               "Mình bỏ túi %s của đối thủ.", "Thêm một %s của đối thủ vào giỏ."}
-            };
+            // Câu ăn quân. Có thêm nhận xét về lời/lỗ khi bản lời bình đủ dài (mã F: ăn không bị ăn lại, G: ăn lại được nhưng vẫn lời,
+            // E: đổi ngang giá, L: đổi bị thiệt)
+            static final String[] MC_SIMPLE = {
+              "Nước này ăn %s của đối thủ.", "Mình thu về %s của đối thủ.", "Mình lấy được %s của đối thủ.", "Mình bắt gọn %s của đối thủ."};
+            static final String[] MC_SIMPLE_H = {
+              "Xin lỗi nhé, mình mượn %s của đối thủ.", "Ăn gọn %s, cảm ơn đã gửi quân.", "Mình bỏ túi %s của đối thủ."};
+            static final String[] MC_F = {
+              "Mình ăn %s của đối thủ, quân này không bị ăn lại nên mình lời trọn một quân.",
+              "Nước đi thu về %s của đối thủ mà không phải trả giá, mình hơn hẳn một quân.",
+              "Mình lấy được %s của đối thủ, đối thủ không có đường đòi lại, một quân lời trọn.",
+              "Mình ăn %s của đối thủ một cách gọn gàng, đối thủ không thể ăn lại."};
+            static final String[] MC_G = {
+              "Mình ăn %s của đối thủ. Dù đối thủ có thể ăn lại, tính cả hai chiều mình vẫn có lợi.",
+              "Mình thu về %s của đối thủ, bị ăn lại cũng không sao vì tính ra mình vẫn lời trong cuộc đổi này."};
+            static final String[] MC_E = {
+              "Mình ăn %s của đối thủ, hai bên đổi quân ngang giá và thế cờ đơn giản đi.",
+              "Mình lấy %s của đối thủ trong một cuộc đổi quân ngang giá, lực tấn công của cả hai bên đều giảm bớt."};
+            static final String[] MC_L = {
+              "Mình ăn %s của đối thủ, nhưng cuộc đổi này mình thiệt về quân, chỉ đáng nếu thế trận bù lại được.",
+              "Mình lấy %s của đối thủ, tuy nhiên tính cả cuộc đổi thì mình hơi thiệt."};
 
-            static final String[][] OPP_CAP = {
-              {"Tiếc là đối thủ ăn mất %s của mình.", "Đối thủ ăn %s của mình.", "Mình mất %s ở nước này.",
-               "Mình bị mất %s, cần bình tĩnh.", "Đối thủ lấy đi %s của mình."},
-              {"Ôi, %s của mình đã ra đi.", "Đối thủ ăn mất %s, mình tiếc hùi hụi.", "Tạm biệt %s thân yêu.",
-               "Mình mất %s, coi như cho mượn.", "%s của mình bị bắt cóc rồi."}
-            };
+            static final String[] OC_SIMPLE = {
+              "Tiếc là đối thủ ăn mất %s của mình.", "Đối thủ ăn %s của mình.", "Mình mất %s ở nước này.", "Đối thủ lấy đi %s của mình."};
+            static final String[] OC_SIMPLE_H = {
+              "Ôi, %s của mình đã ra đi.", "Tạm biệt %s thân yêu.", "%s của mình bị bắt cóc rồi."};
+            static final String[] OC_F = {
+              "Đối thủ ăn %s của mình, mình không có cách ăn lại nên mất trắng một quân.",
+              "Mình mất %s ở nước này và không thể đòi lại, đây là tổn thất thật sự.",
+              "Đối thủ lấy đi %s của mình mà không bị ăn lại, mình đang thiệt một quân."};
+            static final String[] OC_G = {
+              "Đối thủ ăn %s của mình. Mình ăn lại được, nhưng tính cả hai chiều vẫn thiệt một chút.",
+              "Mình mất %s, có thể ăn lại nhưng cuộc đổi này vẫn nghiêng về phía đối thủ."};
+            static final String[] OC_E = {
+              "Đối thủ ăn %s của mình, hai bên đổi quân ngang giá.",
+              "Mình mất %s trong một cuộc đổi quân ngang giá, thế cờ nhẹ đi."};
+            static final String[] OC_L = {
+              "Đối thủ ăn %s của mình, nhưng cuộc đổi này họ chịu thiệt về quân, đó là cơ hội cho mình.",
+              "Mình mất %s, tuy vậy đối thủ trả giá khá đắt trong cuộc đổi này."};
 
             // EVAL[tone][loại thế cờ]: 0 sắp chiếu bí đối thủ, 1 hơn nhiều, 2 hơn nhẹ, 3 cân bằng, 4 kém nhẹ, 5 kém nhiều, 6 sắp bị chiếu bí
             static final String[][][] EVAL = {
@@ -2325,6 +2394,7 @@ jobs:
                 {"Nguy to rồi, mình sắp bị chiếu bí!", "Đối thủ có đường chiếu bí, tim mình đập thình thịch."}
               }
             };
+            static final String[] EVAL_LEAD = {"Sau nước này, ", "Đến đây, ", "Nhìn tổng thể, ", "Ở thời điểm này, ", "Lúc này, "};
 
             static final String[][][] FINAL = {
               {
@@ -2347,42 +2417,48 @@ jobs:
               }
             };
 
-            static final String[][] HIT = {
-              {"Đúng như mình dự đoán.", "Đối thủ đi đúng như mình tính trước."},
-              {"Đúng như mình đoán, đọc bài chuẩn luôn.", "Mình đoán trúng phóc nước này."}
-            };
-            static final String[][] OPP_BAD = {
-              {"Nước này chưa chính xác: sau đó thế cờ nghiêng thêm về phía mình.",
-               "Đây không phải nước tốt nhất của đối thủ, thế cờ nghiêng thêm về phía mình."},
-              {"Nước này hơi ẩu, thế cờ nghiêng thêm về phía mình rồi.", "Đối thủ đi chưa chuẩn, mình cảm ơn món quà."}
-            };
-            static final String[][] OPP_GOOD = {
-              {"Đây là nước tốt của đối thủ: thế cờ bớt thuận lợi cho mình.", "Đối thủ đi rất chuẩn, mình phải dè chừng hơn."},
-              {"Nước này hay đấy, mình phải công nhận.", "Đối thủ chơi đẹp, mình bị gỡ lại một chút."}
-            };
-            static final String[][] OPP_OK = {
-              {"Nước này nằm trong dự tính, thế cờ không đổi nhiều.", "Nước đi bình thường, thế cờ chưa có thay đổi lớn."},
-              {"Nước này nằm trong dự tính, chưa có gì bất ngờ.", "Bình thường thôi, chưa có gì để hồi hộp."}
-            };
-            static final String[][] PLAN2 = {
-              {"Mình dự tính: nếu đối thủ đáp bằng %a, mình sẽ tiếp tục với %b.", "Nếu đối thủ đáp bằng %a thì mình sẽ đi tiếp %b."},
-              {"Kế hoạch của mình: đối thủ đi %a thì mình đáp %b.", "Mình đã tính sẵn: nếu đối thủ đi %a, mình sẽ tung %b."}
-            };
-            static final String[][] PLAN1 = {
-              {"Mình dự tính đối thủ sẽ đáp bằng %a.", "Mình đoán đối thủ sẽ đi %a."},
-              {"Mình đoán đối thủ sẽ đi %a, hy vọng đúng.", "Theo mình tính, đối thủ sẽ đáp bằng %a."}
-            };
-            static final String[][] TOTAL = {
-              {"Tổng kết ván cờ. Mình ăn được %a quân của đối thủ, còn đối thủ ăn của mình %b quân.",
-               "Tổng kết ván cờ: mình ăn %a quân, đối thủ ăn %b quân."},
-              {"Điểm danh chiến lợi phẩm nào: mình ăn %a quân, đối thủ ăn %b quân.",
-               "Tổng kết nhanh: mình bỏ túi %a quân, đối thủ lấy được %b quân."}
-            };
-            static final String[][] NOCAP = {
-              {"Tổng kết ván cờ. Hai bên chưa ăn quân nào.", "Tổng kết ván cờ: cả hai bên chưa ăn quân nào."},
-              {"Tổng kết: hai bên lịch sự quá, chưa ai ăn quân nào.", "Hai bên nhường nhau hết, chưa có quân nào bị ăn."}
-            };
+            static final String[] HIT = {
+              "Đối thủ đi đúng như mình dự tính.", "Diễn biến đúng như mình đã nghĩ.",
+              "Nước đáp này nằm trong dự tính của mình.", "Đối thủ chọn đúng hướng mà mình đã đoán."};
+            static final String[] MISS = {
+              "Đối thủ chọn hướng khác với dự tính của mình, mình cần tính lại.",
+              "Nước đáp này nằm ngoài dự tính, mình phải điều chỉnh kế hoạch."};
+            static final String[] OPP_BAD = {
+              "Đây không phải nước tốt nhất của đối thủ, thế cờ nghiêng thêm về phía mình.",
+              "Nước đi này của đối thủ chưa chính xác, mình được lợi thế rõ hơn.",
+              "Đối thủ đi chưa chuẩn, mình nhận thêm cơ hội."};
+            static final String[] OPP_BAD_H = {"Nước này hơi ẩu, thế cờ nghiêng thêm về phía mình rồi.", "Đối thủ đi chưa chuẩn, mình cảm ơn món quà."};
+            static final String[] OPP_GOOD = {
+              "Đây là nước đi tốt của đối thủ, thế cờ bớt thuận lợi cho mình.",
+              "Đối thủ chơi chính xác, mình phải dè chừng hơn.",
+              "Nước đáp trả hay, đối thủ gỡ lại được một phần thế trận."};
+            static final String[] OPP_GOOD_H = {"Nước này hay đấy, mình phải công nhận.", "Đối thủ chơi đẹp, mình bị gỡ lại một chút."};
+            static final String[] PLAN2 = {
+              "Mình dự tính: nếu đối thủ đáp bằng %a, mình sẽ tiếp tục với %b.",
+              "Kế hoạch của mình là nếu đối thủ đi %a thì mình sẽ đáp %b.",
+              "Theo tính toán của mình, nếu đối thủ chọn %a, mình sẽ đi tiếp %b."};
+            static final String[] PLAN1 = {"Mình dự đoán đối thủ sẽ đáp bằng %a.", "Mình cho rằng đối thủ sẽ đi %a."};
+            static final String[] TOTAL = {
+              "Tổng kết ván cờ: mình ăn được %a quân của đối thủ, còn đối thủ ăn của mình %b quân.",
+              "Tổng kết lại, mình ăn %a quân, đối thủ ăn %b quân."};
+            static final String[] TOTAL_H = {
+              "Điểm danh chiến lợi phẩm nào: mình ăn %a quân, đối thủ ăn %b quân.",
+              "Tổng kết nhanh: mình bỏ túi %a quân, đối thủ lấy được %b quân."};
+            static final String[] NOCAP = {"Tổng kết ván cờ: hai bên chưa ăn quân nào.", "Tổng kết lại, cả hai bên chưa ăn quân nào."};
+            static final String[] NOCAP_H = {"Tổng kết: hai bên lịch sự quá, chưa ai ăn quân nào."};
+            static final String[] MORE = {"Về lực lượng, mình có phần nhỉnh hơn.", "Xét về số quân đã ăn, mình đang dẫn trước."};
+            static final String[] LESS = {"Về lực lượng, mình đang kém đối thủ một chút.", "Xét về số quân đã ăn, đối thủ đang dẫn trước."};
+            static final String[] EQUAL = {"Về lực lượng, hai bên cân bằng.", "Số quân đã ăn của hai bên bằng nhau."};
+            static final String[] MID = {
+              "Sau những nước khai cuộc, ván cờ bước vào giai đoạn trung cuộc.",
+              "Các quân đã ra hết, ván cờ bước sang giai đoạn trung cuộc.",
+              "Từ đây, ván cờ chuyển sang giai đoạn trung cuộc, giao tranh bắt đầu rõ nét."};
+            static final String[] END = {
+              "Ván cờ đã đi vào giai đoạn cuối, từng nước đi lúc này đều cần tính kỹ.",
+              "Bước sang những nước cuối, mọi sai sót đều phải trả giá.",
+              "Đây là giai đoạn quyết định của ván cờ."};
             static final String[] HTAG = {"Khá tinh quái đấy.", "Nghe cũng hợp lý đấy chứ.", "Cờ tướng là vậy mà.", "Đúng chất cao thủ."};
+            static final String[] LINK = {"Đồng thời, ", "Bên cạnh đó, ", "Ngoài ra, ", "Không chỉ vậy, "};
 
             // Đổi số trong ký hiệu nước đi ("Pháo 2 bình 5") thành chữ để giọng đọc phát âm chắc chắn
             static String spoken(String t) {
@@ -2394,6 +2470,54 @@ jobs:
                 else b.append(c);
               }
               return b.toString();
+            }
+
+            // Đọc số tự nhiên bằng chữ tiếng Việt (dùng khi chuyển lời bình sang giọng đọc)
+            static String viNum(int n) {
+              if (n < 0) return "âm " + viNum(-n);
+              if (n < 10) return NUM[n];
+              if (n < 20) return n == 10 ? "mười" : "mười " + (n == 15 ? "lăm" : NUM[n % 10]);
+              if (n < 100) {
+                int t = n / 10, u = n % 10;
+                String s = NUM[t] + " mươi";
+                if (u == 0) return s;
+                if (u == 1) return s + " mốt";
+                if (u == 5) return s + " lăm";
+                return s + " " + NUM[u];
+              }
+              if (n < 1000) {
+                int h = n / 100, r = n % 100;
+                String s = NUM[h] + " trăm";
+                if (r == 0) return s;
+                if (r < 10) return s + " linh " + NUM[r];
+                return s + " " + viNum(r);
+              }
+              int th = n / 1000, r = n % 1000;
+              String s = viNum(th) + " nghìn";
+              if (r == 0) return s;
+              if (r < 100) return s + " không trăm " + (r < 10 ? "linh " + NUM[r] : viNum(r));
+              return s + " " + viNum(r);
+            }
+
+            static final Pattern DIGITS = Pattern.compile("[0-9]+");
+
+            // Văn bản hiển thị/sửa tay -> văn bản đưa cho giọng đọc: số thành chữ, bỏ ký hiệu khó đọc
+            static String speakable(String t) {
+              t = t.replace("→", ", rồi ").replace("(lật)", ", lật quân");
+              Matcher m = DIGITS.matcher(t);
+              StringBuffer sb = new StringBuffer();
+              while (m.find()) {
+                String d = m.group();
+                String r;
+                if (d.length() > 6 || (d.length() > 1 && d.charAt(0) == '0')) {
+                  StringBuilder b = new StringBuilder();
+                  for (int i = 0; i < d.length(); i++) { if (i > 0) b.append(' '); b.append(NUM[d.charAt(i) - '0']); }
+                  r = b.toString();
+                } else r = viNum(Integer.parseInt(d));
+                m.appendReplacement(sb, Matcher.quoteReplacement(r));
+              }
+              m.appendTail(sb);
+              return sb.toString();
             }
 
             static int parse(String s) {
@@ -2421,177 +2545,322 @@ jobs:
               return null;
             }
 
-            // Các câu giải thích vì sao đi nước này (mặt lợi) và mặt hại của nó, cắt theo độ dài và tùy chọn mặt hại.
-            static void why(List<String> out, boolean mine, String why, String capName) {
+            // Câu nói về quân bị ăn
+            static String capLine(boolean mine, String name, String cap) {
+              String nm = name != null && name.length() > 0 ? name : "quân";
+              String[] pool;
+              if (cap == null || level == 0 || (tone == 1 && rnd.nextInt(3) == 0)) {
+                pool = mine ? mix(MC_SIMPLE, MC_SIMPLE_H) : mix(OC_SIMPLE, OC_SIMPLE_H);
+              } else {
+                String q = cap.endsWith(":F") ? "F" : cap.endsWith(":G") ? "G" : cap.endsWith(":E") ? "E" : "L";
+                if (mine) pool = q.equals("F") ? MC_F : q.equals("G") ? MC_G : q.equals("E") ? MC_E : MC_L;
+                else pool = q.equals("F") ? OC_F : q.equals("G") ? OC_G : q.equals("E") ? OC_E : OC_L;
+                // phần "mặt hại" chỉ nói khi bật; tắt thì chỉ nêu việc ăn quân
+                boolean hurt = mine ? q.equals("L") : (q.equals("F") || q.equals("G"));
+                if (hurt && !risk) pool = mine ? MC_SIMPLE : OC_SIMPLE;
+              }
+              return pick(pool).replace("%s", nm);
+            }
+
+            // Thêm một câu giải thích kèm chủ đề (tag) để kiểm soát việc nhắc lặp
+            static void add(ArrayList<String> ls, ArrayList<String> tags, String s, String tag) { ls.add(s); tags.add(tag); }
+
+            // Các câu giải thích vì sao đi nước này (mặt lợi) và mặt mạnh/yếu của nó. Phần ăn quân đã nói riêng ở capLine.
+            static void why(List<String> out, boolean mine, String why, int i, boolean hadCap) {
               if (why == null) why = "";
               if (level == 0) {   // ngắn: chỉ báo chiếu tướng
                 if (tok(why, "CHK") != null)
-                  out.add(mine ? v("Nước này chiếu tướng đối thủ.", "Mình chiếu tướng!") : v("Đối thủ chiếu tướng mình.", "Mình đang bị chiếu."));
+                  out.add(mine ? pick("Nước này chiếu tướng đối thủ.", "Mình chiếu tướng đối thủ.") : pick("Đối thủ chiếu tướng mình.", "Mình đang bị chiếu."));
                 return;
               }
-              ArrayList<String> ls = new ArrayList<String>();     // lý do, mặt lợi
-              ArrayList<String> hurt = new ArrayList<String>();   // mặt hại
-              String cap = tok(why, "CAP");
+              ArrayList<String> ls = new ArrayList<String>();      // mặt lợi / điểm đáng nói
+              ArrayList<String> tg = new ArrayList<String>();      // chủ đề tương ứng (null = luôn nói)
+              ArrayList<String> hurt = new ArrayList<String>();    // mặt hại
               if (tok(why, "EVC") != null)
-                ls.add(mine ? v("Mình đang bị chiếu nên nước này để hóa giải thế chiếu.", "Mình bị chiếu nên phải đi nước này để hóa giải.")
-                            : v("Đối thủ đang bị mình chiếu nên phải hóa giải ngay.", "Đối thủ bị mình chiếu, buộc phải đỡ ngay."));
+                add(ls, tg, mine
+                    ? pick(mix(new String[]{"Mình đang bị chiếu nên phải hóa giải ngay trước khi tính chuyện khác.",
+                                            "Nước đi này gần như bắt buộc để thoát thế chiếu.",
+                                            "Mình bị chiếu, nên việc đầu tiên là hóa giải thế chiếu."}, null))
+                    : pick("Đối thủ đang bị chiếu nên chỉ còn cách hóa giải.",
+                           "Đối thủ phải dành nước này để đỡ thế chiếu, mất đi một nhịp.",
+                           "Bị chiếu, đối thủ buộc phải đối phó và không còn thời gian cho kế hoạch riêng."), null);
               if (tok(why, "CHK") != null)
-                ls.add(mine ? v("Nước này chiếu tướng, ép đối thủ phải đối phó ngay thay vì làm việc khác.", "Mình chiếu tướng, đối thủ buộc phải đỡ ngay.")
-                            : v("Nước này chiếu tướng mình, mình buộc phải đỡ ngay.", "Đối thủ chiếu tướng, mình phải lo đỡ trước đã."));
-              if (cap != null) {
-                String q = cap.endsWith(":F") ? "F" : cap.endsWith(":G") ? "G" : cap.endsWith(":E") ? "E" : "L";
-                String nm = capName != null && capName.length() > 0 ? capName : "quân";
-                if (q.equals("F")) {
-                  if (mine) ls.add(v("Cái lợi là ăn " + nm + " mà đối thủ không thể ăn lại, mình lời trọn một quân.",
-                                     "Ăn " + nm + " mà đối thủ không ăn lại được, mình lời trọn một quân."));
-                  else hurt.add(v("Mình không có cách ăn lại, nên mất trắng " + nm + " này.", "Mình không ăn lại được, coi như mất hẳn " + nm + "."));
-                } else if (q.equals("G")) {
-                  if (mine) ls.add(v("Đối thủ có thể ăn lại, nhưng tính cả hai chiều mình vẫn lời trong cuộc đổi quân này.",
-                                     "Bị ăn lại cũng không sao, tính ra mình vẫn lời trong cuộc đổi này."));
-                  else hurt.add(v("Mình có thể ăn lại, nhưng tính cả hai chiều mình vẫn chịu thiệt một chút.", "Mình ăn lại được, nhưng tính ra vẫn thiệt một chút."));
-                } else if (q.equals("E")) {
-                  ls.add(v("Đây là cuộc đổi quân ngang giá, thế cờ đơn giản đi và hai bên đều bớt lực lượng tấn công.",
-                           "Đổi quân ngang giá, thế cờ nhẹ đi và hai bên đều bớt lực tấn công."));
-                } else {
-                  if (mine) hurt.add(v("Mặt hại: đây là cuộc đổi mà mình thiệt về quân, chỉ đáng nếu có lợi thế về thế trận.",
-                                       "Mặt hại: cuộc đổi này mình thiệt quân, chỉ đáng nếu thế trận bù lại được."));
-                  else ls.add(v("Đối thủ chịu thiệt về quân trong cuộc đổi này, đó là cơ hội cho mình.", "Đối thủ đổi quân bị thiệt, đây là cơ hội của mình."));
-                }
-              }
+                add(ls, tg, mine
+                    ? pick(mix(new String[]{"Đây là nước chiếu tướng, buộc đối thủ phải đối phó ngay.",
+                                            "Nước chiếu này giữ thế chủ động, đối thủ không có thời gian làm việc khác.",
+                                            "Thế chiếu tạo áp lực trực tiếp lên cung của đối thủ."},
+                              new String[]{"Chiếu tướng nhé, mời đối thủ lo thân trước."}))
+                    : pick("Đối thủ chiếu tướng, mình phải đỡ ngay.",
+                           "Mình bị chiếu và cần xử lý trước tiên.",
+                           "Nước chiếu của đối thủ buộc mình phải đáp lại."), null);
               String thr = tok(why, "THR");
               if (thr != null && thr.length() > 0) {
                 String th = thr.replace("+", " và ");
-                String lead = ls.isEmpty() ? "Nước này" : "Đồng thời nước này";
-                ls.add(mine ? v(lead + " đe dọa ăn " + th + " của đối thủ, buộc đối thủ phải lo giữ quân.",
-                                lead + " nhắm vào " + th + " của đối thủ, đối thủ phải lo bảo vệ.")
-                            : v("Nước này đe dọa ăn " + th + " của mình, mình cần xử lý.", "Đối thủ đang nhắm vào " + th + " của mình, mình phải tính cách đỡ."));
+                add(ls, tg, (mine
+                    ? pick("Nước đi này đe dọa ăn %s của đối thủ, buộc họ phải lo giữ quân.",
+                           "%s của đối thủ bị nhắm tới, đối thủ phải bỏ thời gian để bảo vệ.",
+                           "Mình tạo ra đe dọa vào %s của đối thủ, đối thủ không thể đi tự do.",
+                           "Đòn này nhắm thẳng vào %s của đối thủ, đối thủ phải đáp lại.")
+                    : pick("Nước đi này đe dọa ăn %s của mình, mình cần xử lý.",
+                           "Đối thủ đang nhắm vào %s của mình, mình phải tính cách đỡ.",
+                           "%s của mình đang bị uy hiếp sau nước này, cần có biện pháp.",
+                           "Mình phải lo cho %s, vì đối thủ vừa tạo ra đe dọa.")).replace("%s", th), null);
               }
               String esc = tok(why, "ESC");
               if (esc != null && esc.length() > 0)
-                ls.add(mine ? v("Nước này đưa " + esc + " thoát khỏi đòn đe dọa của đối thủ.", "Mình cho " + esc + " chạy khỏi đòn đe dọa của đối thủ.")
-                            : v("Đối thủ vừa đưa " + esc + " thoát khỏi đòn đe dọa của mình.", "Đối thủ kịp cho " + esc + " chạy thoát khỏi đòn của mình."));
+                add(ls, tg, (mine
+                    ? pick("Nước đi cũng đưa %s thoát khỏi đòn đe dọa của đối thủ.",
+                           "Mình kịp đưa %s ra khỏi tầm tấn công của đối thủ.",
+                           "%s của mình rút khỏi vùng nguy hiểm, không còn bị đe dọa.")
+                    : pick("Đối thủ kịp đưa %s thoát khỏi đòn của mình.",
+                           "%s của đối thủ rút khỏi tầm tấn công, đòn đe dọa của mình không còn tác dụng.",
+                           "Đối thủ xử lý gọn, %s thoát nạn.")).replace("%s", esc), null);
               String sv = tok(why, "SAVE");
               if (sv != null && sv.length() > 0)
-                ls.add(mine ? v("Cũng nhờ nước này, " + sv + " của mình không còn bị ăn.", "Nước này còn cứu được " + sv + " của mình khỏi bị ăn.")
-                            : v("Nước này cũng cứu " + sv + " của đối thủ khỏi bị mình ăn.", "Đối thủ vừa kịp cứu " + sv + " khỏi đòn của mình."));
-              if (tok(why, "QS") != null)
-                ls.add(mine ? v("Tốt đã qua sông, mạnh hơn vì có thể đi ngang và gây áp lực lên cung đối thủ.", "Tốt qua sông rồi, giờ đi ngang được và bắt đầu gây áp lực lên cung đối thủ.")
-                            : v("Tốt của đối thủ qua sông, bắt đầu gây áp lực lên cung của mình.", "Tốt đối thủ đã qua sông, cung của mình bắt đầu bị để ý."));
-              if (tok(why, "PD") != null)
-                ls.add(mine ? v("Pháo vào giữa, nhắm thẳng vào cung đối thủ và hỗ trợ tấn công trung lộ.", "Pháo vào giữa, nhắm thẳng cung đối thủ, mở màn tấn công trung lộ.")
-                            : v("Đối thủ đặt pháo vào giữa, tạo áp lực lên trung lộ của mình.", "Pháo đối thủ vào giữa, trung lộ của mình bắt đầu nóng."));
+                add(ls, tg, (mine
+                    ? pick("Nước đi này cũng bảo vệ được %s của mình.",
+                           "%s của mình nhờ đó không còn bị đe dọa.",
+                           "Mình vừa đi vừa giữ được %s, một nước đi hiệu quả.")
+                    : pick("Đối thủ vừa kịp bảo vệ %s khỏi đòn của mình.",
+                           "%s của đối thủ đã được che chắn, đòn đe dọa của mình không còn tác dụng.",
+                           "Đối thủ giữ được %s, mình cần tìm hướng khác.")).replace("%s", sv), null);
+              if (tok(why, "QS") != null && canUse(mine, "QS", i, 10))
+                add(ls, tg, mine
+                    ? pick("Tốt đã qua sông, có thể đi ngang và bắt đầu tạo áp lực lên cung đối thủ.",
+                           "Quân Tốt qua sông trở nên linh hoạt hơn, có thêm hướng tấn công.",
+                           "Tốt vượt sông, lực uy hiếp tăng lên đáng kể.")
+                    : pick("Tốt của đối thủ qua sông, bắt đầu gây áp lực lên cung của mình.",
+                           "Đối thủ đưa Tốt qua sông, mình cần để ý các đường đi ngang.",
+                           "Tốt qua sông giúp đối thủ có thêm quân tấn công."), "QS");
+              if (tok(why, "PD") != null && canUse(mine, "PD", i, 8))
+                add(ls, tg, mine
+                    ? pick("Pháo vào giữa, nhắm thẳng vào cung đối thủ và mở đường cho đòn tấn công trung lộ.",
+                           "Pháo chiếm trung lộ, tạo áp lực trực tiếp lên cung đối thủ.",
+                           "Mình đặt Pháo vào giữa, hướng thẳng về phía Tướng đối thủ.")
+                    : pick("Đối thủ đặt Pháo vào giữa, tạo áp lực lên trung lộ của mình.",
+                           "Pháo của đối thủ vào giữa, mình cần chú ý các đường tấn công ở trung lộ.",
+                           "Trung lộ của mình bắt đầu chịu sức ép từ Pháo đối thủ."), "PD");
               String dev = tok(why, "DEV");
-              if (dev != null && dev.length() > 0)
-                ls.add(mine ? v("Mục đích là đưa " + dev + " ra khỏi vị trí ban đầu để tham gia trận đấu.", "Mình đưa " + dev + " ra hoạt động, bắt đầu vào trận.")
-                            : v("Đối thủ đưa " + dev + " ra hoạt động, bắt đầu tham gia trận đấu.", "Đối thủ cho " + dev + " ra khỏi chỗ cũ, trận đấu nóng dần."));
-              if (tok(why, "XC") != null)
-                ls.add(mine ? v("Xe chiếm cột không còn tốt cản nên đường đi thoáng, dễ tạo đe dọa về sau.", "Xe chiếm được cột thoáng, về sau dễ tạo đe dọa.")
-                            : v("Xe đối thủ chiếm cột thoáng, mình cần để ý các đường xe.", "Xe đối thủ có cột thoáng, mình phải canh các đường xe."));
-              if (tok(why, "DF") != null)
-                ls.add(mine ? v("Nước này củng cố cung phòng thủ, giảm nguy cơ bị chiếu, nhưng không tạo thêm sức tấn công.", "Mình củng cố cung cho chắc, đỡ bị chiếu nhưng không thêm sức tấn công.")
-                            : v("Đối thủ củng cố cung của họ, nên tạm thời khó tấn công trực tiếp.", "Đối thủ gia cố cung, tạm thời khó tấn công trực tiếp."));
-              if (tok(why, "KG") != null)
-                ls.add(mine ? v("Tướng di chuyển nhẹ để tránh áp lực, nhưng cũng làm cung bớt chắc.", "Tướng nhích nhẹ để tránh áp lực, đổi lại cung bớt chắc.")
-                            : v("Tướng đối thủ đổi vị trí để tránh áp lực.", "Tướng đối thủ dời chỗ cho đỡ bị ép."));
-              if (ls.isEmpty() && hurt.isEmpty())
-                ls.add(mine ? v("Đây là nước yên lặng: không ăn quân hay đe dọa trực tiếp, chủ yếu cải thiện thế trận và chuẩn bị cho bước sau.",
-                                "Nước yên lặng, không ăn quân cũng chưa đe dọa gì, chủ yếu chuẩn bị cho bước sau.")
-                            : v("Đối thủ đi một nước yên lặng, chưa tạo ra đe dọa trực tiếp nào.", "Đối thủ đi nước yên lặng, chưa có đe dọa nào."));
+              if (dev != null && dev.length() > 0 && i < 30 && canUse(mine, "DEV", i, 5))
+                add(ls, tg, (mine
+                    ? pick("Mình đưa %s ra ngoài, bắt đầu tham gia vào cuộc chiến.",
+                           "%s được triển khai, giúp thế trận của mình linh hoạt hơn.",
+                           "Việc đưa %s ra khỏi vị trí ban đầu giúp mình có thêm quân hoạt động.",
+                           "Mình khai thông %s để các quân phối hợp tốt hơn.")
+                    : pick("Đối thủ đưa %s ra hoạt động, thế trận bắt đầu căng lên.",
+                           "%s của đối thủ được triển khai, hai bên bắt đầu giao tranh.",
+                           "Đối thủ triển khai %s, chuẩn bị cho các bước tiếp theo.")).replace("%s", dev), "DEV");
+              if (tok(why, "XC") != null && canUse(mine, "XC", i, 8))
+                add(ls, tg, mine
+                    ? pick("Xe chiếm được cột thoáng, về sau dễ tạo ra những đe dọa mới.",
+                           "Xe có đường đi thông suốt trên cột này, rất thuận lợi cho tấn công.",
+                           "Cột đã thoáng, Xe của mình phát huy được sức mạnh.")
+                    : pick("Xe đối thủ chiếm cột thoáng, mình cần để ý các đường Xe.",
+                           "Cột đã mở cho Xe đối thủ, mình phải canh chừng.",
+                           "Xe đối thủ có đường đi thông thoáng, có thể gây phiền toái."), "XC");
+              if (tok(why, "DF") != null && canUse(mine, "DF", i, 8))
+                add(ls, tg, mine
+                    ? pick("Mình củng cố cung, giảm nguy cơ bị chiếu, tuy nhiên không tăng thêm sức tấn công.",
+                           "Nước đi chắc chắn, gia cố hàng phòng thủ trước khi tính chuyện tấn công.",
+                           "Mình ưu tiên an toàn cho cung, đổi lại nhịp tấn công chậm lại một chút.")
+                    : pick("Đối thủ củng cố cung, nên tạm thời khó tấn công trực tiếp.",
+                           "Đối thủ gia cố phòng thủ, mình cần kiên nhẫn tìm cơ hội khác.",
+                           "Hàng phòng thủ của đối thủ chắc hơn, tấn công trực diện lúc này khó có hiệu quả."), "DF");
+              if (tok(why, "KG") != null && canUse(mine, "KG", i, 6))
+                add(ls, tg, mine
+                    ? pick("Tướng nhích nhẹ để tránh áp lực, đổi lại cung bớt chắc.",
+                           "Mình dời Tướng để thoát thế bị ép, dù cung có phần lỏng hơn.")
+                    : pick("Tướng đối thủ đổi vị trí để tránh áp lực.", "Đối thủ dời Tướng cho đỡ bị ép."), "KG");
               String rk = tok(why, "RISK");
               if (rk != null && rk.length() > 0) {
-                if (mine) hurt.add(v("Mặt hại cần chú ý: sau nước này " + rk + " của mình đang bị uy hiếp, phải để ý bảo vệ.",
-                                     "Mặt hại: sau nước này " + rk + " của mình đang bị đe dọa, nhớ canh chừng."));
-                else ls.add(v("Điểm yếu của đối thủ: " + rk + " của họ đang bị mình uy hiếp, mình có thể khai thác.",
-                              "Điểm yếu của đối thủ: " + rk + " đang bị mình để mắt tới, có thể khai thác."));
+                if (mine) hurt.add(pick("Cần lưu ý: sau nước này %s của mình đang bị uy hiếp, phải chú ý bảo vệ.",
+                                        "Mặt hại của nước đi là %s bị đe dọa, mình phải cẩn thận ở nước sau.",
+                                        "Rủi ro cần tính đến: %s đang nằm trong tầm tấn công của đối thủ.").replace("%s", rk));
+                else add(ls, tg, pick("Điểm yếu của đối thủ: %s đang bị mình để mắt tới, có thể khai thác.",
+                                      "%s của đối thủ chưa an toàn, đây là mục tiêu mình có thể nhắm tới.",
+                                      "Mình chú ý %s của đối thủ, quân này đang là điểm yếu.").replace("%s", rk), null);
+              }
+              // nước đi kín: không có gì đáng nói thì thôi, chỉ thỉnh thoảng mới nhận xét
+              if (ls.isEmpty() && hurt.isEmpty() && !hadCap && canUse(mine, "Q", i, 7)) {
+                add(ls, tg, mine
+                    ? pick("Đây là nước đi chắc, chưa ăn quân hay đe dọa trực tiếp, chủ yếu nhằm cải thiện thế trận.",
+                           "Một nước đi kín, không có gì đột biến nhưng giúp mình chuẩn bị cho bước sau.",
+                           "Mình chưa vội tấn công, ưu tiên điều chỉnh vị trí quân cho hợp lý.",
+                           "Nước đi yên tĩnh, thế cờ vẫn giữ nguyên nhịp.")
+                    : pick("Đối thủ đi một nước nhẹ nhàng, chưa tạo ra đe dọa trực tiếp.",
+                           "Nước đi của đối thủ khá kín, chưa có gì đáng lo.",
+                           "Đối thủ chưa vội hành động, mình tiếp tục quan sát."), "Q");
               }
               int maxLs = level == 1 ? 1 : ls.size();
-              for (int i = 0; i < ls.size() && i < maxLs; i++) out.add(ls.get(i));
+              int said = 0;
+              for (int k = 0; k < ls.size() && said < maxLs; k++) {
+                String s = ls.get(k);
+                if (said > 0) s = pick(LINK) + lc(s);
+                out.add(s);
+                if (tg.get(k) != null) mark(mine, tg.get(k), i);
+                said++;
+              }
               if (risk) {
                 int maxH = level == 1 ? 1 : hurt.size();
-                for (int i = 0; i < hurt.size() && i < maxH; i++) out.add(hurt.get(i));
+                for (int k = 0; k < hurt.size() && k < maxH; k++) out.add(hurt.get(k));
               }
-              if (tone == 1 && level >= 2 && rnd.nextInt(4) == 0) out.add(pick(HTAG));
+              if (tone == 1 && level >= 2 && rnd.nextInt(5) == 0) out.add(pick(HTAG));
             }
 
-            static List<String> script(List<String[]> mv) {
-              ArrayList<String> out = new ArrayList<String>();
-              last.clear();
+            static String join(List<String> parts) {
+              StringBuilder b = new StringBuilder();
+              for (String s : parts) { if (b.length() > 0) b.append(' '); b.append(s); }
+              return b.toString();
+            }
+
+            // Soạn lời bình: trả về danh sách đoạn văn, mỗi đoạn là một lượt đi của mình cùng phản ứng của đối thủ
+            static String lastPly = "";   // lời bình của nước đi cuối cùng (dùng cho lời bình trực tiếp)
+
+            static synchronized List<String> script(List<String[]> mv) {
+              ArrayList<String> paras = new ArrayList<String>();
+              lastPly = "";
+              used.clear();
+              clocks.clear();
+              tagAt.clear();
               int n = mv.size();
-              out.add(pick(INTRO).replace("%n", String.valueOf(n)));
-              int cm = 0, co = 0, lastCat = -1, swingAt = -1, swing = 0;
+              paras.add(pick(INTRO).replace("%n", String.valueOf(n)));
+              ArrayList<String> cur = new ArrayList<String>();
+              int cm = 0, co = 0, curCat = -1, saidCat = -1, saidAt = -100, swingAt = -1, swing = 0, planAt = -100;
+              String planned = null;
+              boolean midSaid = false, endSaid = false;
               for (int i = 0; i < n; i++) {
                 String[] m = mv.get(i);
                 boolean mine = "1".equals(m[0]);
-                String mvTxt = spoken(m[1]);
                 String why = m.length > 5 ? m[5] : "";
                 String pv = m.length > 6 ? m[6] : "";
-                String s;
-                if (i == 0) s = (mine ? "Mình" : "Đối thủ") + tn(" mở đầu bằng ", " khai cuộc với ") + mvTxt + ".";
-                else if (mine) s = pick(MINE_MOVE).replace("%s", mvTxt);
-                else s = pick(OPP_MOVE).replace("%s", mvTxt);
-                out.add(s);
-                if (m[2].length() > 0) {
-                  if (mine) { out.add(pick(MINE_CAP).replace("%s", m[2])); cm++; }
-                  else { out.add(pick(OPP_CAP).replace("%s", m[2])); co++; }
+                String mvTxt = spoken(m[1]);
+                if (mine && cur.size() > 0) { paras.add(join(cur)); cur.clear(); }
+                int mark = cur.size();
+                boolean phase = false;
+                if (level >= 1 && n >= 20 && !midSaid && i >= 10) { cur.add(pick(MID)); midSaid = true; phase = true; }
+                else if (level >= 1 && n >= 30 && !endSaid && i >= n - 12) { cur.add(pick(END)); endSaid = true; phase = true; }
+                // câu nêu nước đi
+                String ms;
+                if (i == 0) ms = pick(mine ? mix(MINE_OPEN, MINE_OPEN_H) : mix(OPP_OPEN, OPP_OPEN_H));
+                else ms = pick(mine ? mix(MINE_MOVE, MINE_MOVE_H) : mix(OPP_MOVE, OPP_MOVE_H));
+                ms = ms.replace("%s", mvTxt);
+                if (i > 0 && i % 12 == 0 && level >= 1 && !phase && (ms.startsWith("Mình ") || ms.startsWith("Đối thủ ")))
+                  ms = "Đến nước thứ " + (i + 1) + ", " + lc(ms);
+                cur.add(ms);
+                boolean hadCap = m[2].length() > 0;
+                if (hadCap) {
+                  cur.add(capLine(mine, m[2], tok(why, "CAP")));
+                  if (mine) cm++; else co++;
                 }
-                // vì sao đi, mặt lợi và mặt hại (tùy độ dài)
-                why(out, mine, why, m[2]);
+                ArrayList<String> extra = new ArrayList<String>();
+                why(extra, mine, why, i, hadCap);
+                cur.addAll(extra);
                 if (mine) {
                   if ("1".equals(m[3])) {
                     int c = cat(parse(m[4]));
-                    if (c != lastCat) {
+                    curCat = c;
+                    boolean big = c == 0 || c == 6 || (saidCat >= 0 && Math.abs(c - saidCat) >= 2);
+                    if (c != saidCat && (big || i - saidAt >= 6)) {
                       String e = pick(EVAL[tone == 1 ? 1 : 0][c]);
-                      out.add("Sau nước này, " + Character.toLowerCase(e.charAt(0)) + e.substring(1));
-                      lastCat = c;
+                      cur.add(pick(EVAL_LEAD) + lc(e));
+                      saidCat = c;
+                      saidAt = i;
                     }
                   }
-                  // dự tính: nước đối thủ có thể đáp và nước mình đi tiếp theo (chỉ bản Sâu)
-                  if (level >= 2 && pv.length() > 0) {
+                  // dự tính: nước đối thủ có thể đáp và nước mình đi tiếp theo (chỉ bản Sâu, cách nhau vài nước)
+                  planned = null;
+                  if (level >= 2 && pv.length() > 0 && i - planAt >= 6) {
                     String[] pp = pv.split(" → ");
-                    if (pp.length >= 3) out.add(pick(PLAN2).replace("%a", spoken(pp[1])).replace("%b", spoken(pp[2])));
-                    else if (pp.length == 2) out.add(pick(PLAN1).replace("%a", spoken(pp[1])));
+                    if (pp.length >= 3) { cur.add(pick(PLAN2).replace("%a", spoken(pp[1])).replace("%b", spoken(pp[2]))); planned = pp[1]; planAt = i; }
+                    else if (pp.length == 2) { cur.add(pick(PLAN1).replace("%a", spoken(pp[1]))); planned = pp[1]; planAt = i; }
                   }
                 } else {
-                  // đánh giá nước của đối thủ: có đúng dự đoán không, và thế cờ thay đổi bao nhiêu giữa hai lần tính điểm
+                  // đối chiếu với dự tính đã nói, và đánh giá nước đi của đối thủ qua độ lệch điểm giữa hai lần tính
+                  if (planned != null) {
+                    cur.add(pick(planned.equals(m[1]) ? HIT : MISS));
+                    planned = null;
+                  }
                   int pj = -1, nk = -1;
                   for (int j = i - 1; j >= 0; j--) if ("1".equals(mv.get(j)[3]) && "1".equals(mv.get(j)[0])) { pj = j; break; }
                   for (int k = i + 1; k < n; k++) if ("1".equals(mv.get(k)[3]) && "1".equals(mv.get(k)[0])) { nk = k; break; }
-                  if (level >= 2 && pj >= 0 && mv.get(pj).length > 6) {
-                    String[] pp = mv.get(pj)[6].split(" → ");
-                    if (pp.length >= 2 && pp[1].equals(m[1])) out.add(pick(HIT));
-                  }
                   if (pj >= 0 && nk >= 0) {
                     int a = parse(mv.get(pj)[4]), b = parse(mv.get(nk)[4]);
                     if (Math.abs(a) < 20000 && Math.abs(b) < 20000) {
                       int d = b - a;
-                      if (level >= 2) {
-                        if (d >= 100) out.add(pick(OPP_BAD));
-                        else if (d <= -100) out.add(pick(OPP_GOOD));
-                        else out.add(pick(OPP_OK));
-                      }
+                      int th = level >= 2 ? 100 : 250;
+                      if (level >= 1 && d >= th && canUse(false, "JG", i, 3)) { cur.add(pick(mix(OPP_BAD, OPP_BAD_H))); mark(false, "JG", i); }
+                      else if (level >= 1 && d <= -th && canUse(false, "JG", i, 3)) { cur.add(pick(mix(OPP_GOOD, OPP_GOOD_H))); mark(false, "JG", i); }
                       if (Math.abs(d) > Math.abs(swing)) { swing = d; swingAt = i + 1; }
                     }
                   }
                 }
+                lastPly = join(cur.subList(mark, cur.size()));
               }
-              if (cm == 0 && co == 0) out.add(pick(NOCAP));
-              else out.add(pick(TOTAL).replace("%a", String.valueOf(cm)).replace("%b", String.valueOf(co)));
+              if (cur.size() > 0) paras.add(join(cur));
+              // tổng kết
+              ArrayList<String> end = new ArrayList<String>();
+              if (cm == 0 && co == 0) end.add(pick(mix(NOCAP, NOCAP_H)));
+              else {
+                end.add(pick(mix(TOTAL, TOTAL_H)).replace("%a", String.valueOf(cm)).replace("%b", String.valueOf(co)));
+                if (level >= 1) end.add(pick(cm > co ? MORE : cm < co ? LESS : EQUAL));
+              }
               if (level >= 1 && swingAt > 0 && Math.abs(swing) >= 150) {
-                if (swing > 0) out.add(tn("Bước ngoặt của ván cờ là nước thứ " + swingAt + ": đối thủ đi chưa chính xác và mình được lợi thế.",
+                if (swing > 0) end.add(tn("Bước ngoặt của ván cờ là nước thứ " + swingAt + ": đối thủ đi chưa chính xác và mình giành được lợi thế.",
                                           "Bước ngoặt là nước thứ " + swingAt + ": đối thủ đi hơi ẩu và mình hưởng lợi."));
-                else out.add(tn("Bước ngoặt của ván cờ là nước thứ " + swingAt + ": đối thủ đi một nước rất tốt và mình gặp khó.",
+                else end.add(tn("Bước ngoặt của ván cờ là nước thứ " + swingAt + ": đối thủ tìm được một nước rất tốt và mình rơi vào thế khó.",
                                 "Bước ngoặt là nước thứ " + swingAt + ": đối thủ ra chiêu hay và mình gặp khó."));
               }
-              if (lastCat >= 0) out.add(pick(FINAL[tone == 1 ? 1 : 0][lastCat]));
-              out.add(pick(OUTRO));
-              return out;
+              if (curCat >= 0) end.add(pick(FINAL[tone == 1 ? 1 : 0][curCat]));
+              paras.add(join(end));
+              paras.add(pick(OUTRO));
+              return paras;
             }
 
-            // Gộp các câu thành từng đoạn không quá max ký tự (bộ đọc giọng nói giới hạn độ dài mỗi lần)
-            static List<String> chunks(List<String[]> mv, int max) {
+            // Lời bình ngắn cho nước đi vừa đi xong (đọc trực tiếp khi đang chơi); tối đa mức Vừa để câu không quá dài
+            static synchronized String live(List<String[]> mv, int lvl, int tn, boolean rk) {
+              if (mv.isEmpty()) return "";
+              int ol = level, ot = tone;
+              boolean orisk = risk;
+              level = Math.min(lvl, 1);
+              tone = tn;
+              risk = rk;
+              try { script(mv); return lastPly; }
+              finally { level = ol; tone = ot; risk = orisk; }
+            }
+
+            // Toàn bộ lời bình dưới dạng văn bản (các đoạn cách nhau một dòng trống)
+            static synchronized String compose(List<String[]> mv) {
+              StringBuilder b = new StringBuilder();
+              for (String p : script(mv)) {
+                if (b.length() > 0) b.append("\n\n");
+                b.append(p);
+              }
+              return b.toString();
+            }
+
+            // Cắt văn bản (đã sửa tay hay không) thành các đoạn không quá max ký tự cho bộ đọc giọng nói,
+            // ưu tiên cắt ở chỗ xuống dòng, rồi đến cuối câu. Số được đổi thành chữ.
+            static List<String> chunkText(String text, int max) {
+              ArrayList<String> units = new ArrayList<String>();
+              for (String para : speakable(text).split("\\n+")) {
+                String p = para.trim();
+                if (p.length() == 0) continue;
+                if (!p.matches("(?s).*[.!?…]$")) p += ".";
+                if (p.length() <= max) { units.add(p); continue; }
+                for (String s : p.split("(?<=[.!?…;])\\s+")) {
+                  String q = s.trim();
+                  while (q.length() > max) {   // câu quá dài: cắt ở khoảng trắng gần nhất
+                    int cut = q.lastIndexOf(' ', max);
+                    if (cut < max / 2) cut = max;
+                    units.add(q.substring(0, cut).trim());
+                    q = q.substring(cut).trim();
+                  }
+                  if (q.length() > 0) units.add(q);
+                }
+              }
               ArrayList<String> res = new ArrayList<String>();
               StringBuilder cur = new StringBuilder();
-              for (String s : script(mv)) {
+              for (String s : units) {
                 if (cur.length() > 0 && cur.length() + s.length() + 1 > max) { res.add(cur.toString()); cur.setLength(0); }
                 if (cur.length() > 0) cur.append(' ');
                 cur.append(s);
@@ -2632,6 +2901,13 @@ jobs:
           import android.speech.tts.UtteranceProgressListener;
           import android.speech.tts.Voice;
           import android.text.TextUtils;
+          import android.text.Editable;
+          import android.text.InputType;
+          import android.text.TextWatcher;
+          import android.app.AlertDialog;
+          import android.content.DialogInterface;
+          import android.view.Gravity;
+          import android.widget.EditText;
           import java.io.File;
           import java.io.FileInputStream;
           import java.io.FileOutputStream;
@@ -2664,7 +2940,11 @@ jobs:
             ArrayList<Voice> viVoices = new ArrayList<Voice>();
             int voiceIdx = 0;
             Button voiceBtn, pitchBtn, genBtn, playBtn, dlBtn, rateBtn, lenBtn, riskBtn, toneBtn, fmtBtn;
-            TextView audioInfo, transcript;
+            TextView audioInfo;
+            EditText transcript;       // lời bình dạng chữ, người dùng sửa được; âm thanh được tạo từ chính ô này
+            Button composeBtn, revertBtn;
+            boolean progText = false;  // true khi app tự đặt chữ vào ô (không tính là người dùng sửa)
+            String autoText = null;    // bản lời bình app tự soạn gần nhất, để biết người dùng đã sửa hay chưa
             MediaPlayer mp;
 
             @Override protected void onCreate(Bundle s) {
@@ -2718,6 +2998,17 @@ jobs:
                 public void onCheckedChanged(CompoundButton v, boolean on) { sp.edit().putBoolean("cmOn", on).apply(); refreshAudioUi(); }
               });
               l.addView(cm);
+              CheckBox cl = new CheckBox(this);
+              cl.setText("Lời bình trực tiếp có tiếng khi đang chơi (tắt = im lặng, vẫn ghi để làm lời bình sau)");
+              cl.setChecked(sp.getBoolean("cmLive", false));
+              cl.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                public void onCheckedChanged(CompoundButton v, boolean on) {
+                  sp.edit().putBoolean("cmLive", on).apply();
+                  CaptureService s = CaptureService.inst;
+                  if (s != null) s.liveChanged();
+                }
+              });
+              l.addView(cl);
               l.addView(btn("1. Cấp quyền hiển thị trên ứng dụng khác", new View.OnClickListener() {
                 public void onClick(View v) {
                   startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
@@ -2800,7 +3091,33 @@ jobs:
               });
               box.addView(fmtBtn);
               refreshOptBtns();
-              genBtn = btn("Tạo lại lời bình (chỉ tạo, chưa tải)", new View.OnClickListener() {
+              composeBtn = btn("1. Soạn lời bình (để xem và chỉnh sửa)", new View.OnClickListener() {
+                public void onClick(View v) { onComposeClick(); }
+              });
+              box.addView(composeBtn);
+              TextView editHint = new TextView(this);
+              editHint.setTextSize(13);
+              editHint.setPadding(0, 8, 0, 4);
+              editHint.setText("Bạn có thể sửa trực tiếp lời bình trong ô bên dưới (mỗi đoạn cách nhau một dòng trống). Âm thanh sẽ đọc đúng nội dung bạn đã sửa. Sửa xong bấm \"Tạo âm thanh\".");
+              box.addView(editHint);
+              transcript = new EditText(this);
+              transcript.setTextSize(15);
+              transcript.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+              transcript.setGravity(Gravity.TOP | Gravity.START);
+              transcript.setMinLines(8);
+              transcript.setHorizontallyScrolling(false);
+              transcript.setHint("Chưa có lời bình. Bấm \"Soạn lời bình\" để app soạn từ ván vừa chơi.");
+              transcript.addTextChangedListener(new TextWatcher() {
+                public void beforeTextChanged(CharSequence s, int st, int c, int af) { }
+                public void onTextChanged(CharSequence s, int st, int b, int c) { }
+                public void afterTextChanged(Editable e) { onTranscriptEdited(); }
+              });
+              box.addView(transcript, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+              revertBtn = btn("Khôi phục bản tự soạn (bỏ phần đã sửa)", new View.OnClickListener() {
+                public void onClick(View v) { revertText(); }
+              });
+              box.addView(revertBtn);
+              genBtn = btn("2. Tạo âm thanh từ lời bình (chưa tải)", new View.OnClickListener() {
                 public void onClick(View v) { genAudio(); }
               });
               box.addView(genBtn);
@@ -2812,11 +3129,6 @@ jobs:
                 public void onClick(View v) { createAndSave(); }
               });
               box.addView(dlBtn);
-              transcript = new TextView(this);
-              transcript.setTextSize(13);
-              transcript.setTextIsSelectable(true);
-              transcript.setPadding(0, 16, 0, 0);
-              box.addView(transcript);
               initTts();
               ScrollView sv = new ScrollView(this);
               sv.addView(l);
@@ -2828,8 +3140,14 @@ jobs:
               boolean ov = Settings.canDrawOverlays(this);
               boolean ac = AutoTapService.inst != null;
               status.setText("Hiển thị trên ứng dụng khác: " + (ov ? "ĐÃ CẤP" : "CHƯA CẤP") + "\nTrợ năng (tự chạm): " + (ac ? "ĐÃ BẬT" : "CHƯA BẬT"));
+              loadTranscript();
               refreshAudioUi();
               maybeAutoGen();
+            }
+
+            @Override protected void onPause() {
+              saveText();
+              super.onPause();
             }
 
             // ---------------- Lời bình bằng giọng nói (dùng bộ đọc có sẵn trên điện thoại, không cần mạng) ----------------
@@ -2911,17 +3229,23 @@ jobs:
               File a = GameLog.audioFile(this);
               boolean has = a.exists();
               boolean run = CaptureService.inst != null;
+              boolean hasTxt = transcript != null && transcript.getText().toString().trim().length() > 0;
               if (!genBusy) {
                 String t;
                 if (n == 0) t = getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("cmOn", true) ? "Chưa có ván nào được ghi." : "Lời bình đang TẮT: app không ghi nước đi. Bật công tắc ở màn hình chính nếu muốn có lời bình.";
                 else if (has) t = "Ván vừa rồi: " + n + " nước. Âm thanh lời bình đã sẵn sàng (" + String.format(Locale.US, "%.1f", a.length() / 1048576.0) + " MB).";
-                else if (run) t = "Đang chơi: đã ghi âm thầm " + n + " nước (không phát tiếng).";
-                else t = "Ván vừa rồi: " + n + " nước. Bấm TẠO & TẢI khi cần dùng.";
+                else if (run) t = "Đang chơi: đã ghi " + n + " nước" + (cfg().getBoolean("cmLive", false) ? " (đang đọc lời bình trực tiếp)." : " (không phát tiếng).");
+                else if (hasTxt) t = "Ván vừa rồi: " + n + " nước. Lời bình đã soạn: bạn có thể sửa trong ô bên dưới rồi bấm Tạo âm thanh.";
+                else t = "Ván vừa rồi: " + n + " nước. Bấm Soạn lời bình để xem và chỉnh sửa, hoặc bấm TẠO & TẢI để làm luôn.";
                 audioInfo.setText(t);
               }
-              genBtn.setEnabled(n > 0 && !genBusy && ttsReady);
+              boolean canMake = (n > 0 || hasTxt) && !genBusy && ttsReady;
+              genBtn.setEnabled(canMake);
               playBtn.setEnabled(has && !genBusy && !run);
-              dlBtn.setEnabled(n > 0 && !genBusy && ttsReady);
+              dlBtn.setEnabled(canMake || (has && !genBusy));
+              composeBtn.setEnabled(n > 0 && !genBusy);
+              revertBtn.setEnabled(!genBusy && hasEdits());
+              transcript.setEnabled(!genBusy);
             }
 
             // Không tự tạo âm thanh nữa: chỉ tạo khi bạn bấm nút
@@ -2933,16 +3257,23 @@ jobs:
                 Toast.makeText(this, "Máy chưa có giọng đọc tiếng Việt. Bấm nút Giọng đọc để mở cài đặt.", Toast.LENGTH_LONG).show();
                 return;
               }
-              ArrayList<String[]> mv = GameLog.read(this);
-              if (mv.isEmpty()) { refreshAudioUi(); return; }
-              loadCmOpts();
+              String text = transcript.getText().toString().trim();
+              if (text.length() == 0) {   // chưa soạn: soạn tự động từ ván vừa chơi
+                if (!composeText()) {
+                  Toast.makeText(this, "Chưa có lời bình để đọc. Hãy chơi một ván hoặc tự nhập lời bình.", Toast.LENGTH_LONG).show();
+                  refreshAudioUi();
+                  return;
+                }
+                text = transcript.getText().toString().trim();
+              }
+              saveText();
               applyVoice(false);
               stopPlay();
               GameLog.audioFile(this).delete();
               int max = 1500;
               try { max = Math.min(max, TextToSpeech.getMaxSpeechInputLength() - 200); } catch (Throwable t) { }
-              List<String> ch = Commentary.chunks(mv, Math.max(300, max));
-              transcript.setText(TextUtils.join("\n\n", ch));
+              List<String> ch = Commentary.chunkText(text, Math.max(300, max));   // đọc đúng nội dung trong ô (kể cả phần đã sửa)
+              if (ch.isEmpty()) { refreshAudioUi(); return; }
               genBusy = true;
               refreshAudioUi();
               synthNext(ch, 0, new ArrayList<File>());
@@ -3123,15 +3454,139 @@ jobs:
               return false;
             }
 
-            // Đổi tùy chọn lời bình/giọng đọc: âm thanh cũ không còn đúng nên xoá, phải tạo lại
+            // ---------------- Soạn và chỉnh sửa lời bình ----------------
+
+            static String readText(File f) {
+              try {
+                if (!f.exists()) return null;
+                FileInputStream in = new FileInputStream(f);
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                byte[] b = new byte[8192];
+                int r;
+                while ((r = in.read(b)) > 0) bo.write(b, 0, r);
+                in.close();
+                return bo.toString("UTF-8");
+              } catch (Throwable t) { return null; }
+            }
+
+            static void writeText(File f, String s) {
+              try {
+                FileOutputStream o = new FileOutputStream(f);
+                o.write(s.getBytes("UTF-8"));
+                o.close();
+              } catch (Throwable t) { }
+            }
+
+            final Runnable saveRun = new Runnable() { public void run() { saveText(); } };
+
+            // Lưu nội dung đang có trong ô lời bình ra file (để còn nguyên khi thoát app)
+            void saveText() {
+              ui.removeCallbacks(saveRun);
+              if (transcript == null) return;
+              writeText(GameLog.textFile(this), transcript.getText().toString());
+            }
+
+            void setTranscript(String t) {
+              progText = true;
+              try { transcript.setText(t); } finally { progText = false; }
+            }
+
+            // Nạp lại lời bình đã lưu khi mở app (ván mới thì file đã bị xoá nên ô sẽ trống)
+            void loadTranscript() {
+              if (transcript == null || genBusy) return;
+              String t = readText(GameLog.textFile(this));
+              autoText = readText(GameLog.autoFile(this));
+              if (t == null) t = "";
+              if (!t.equals(transcript.getText().toString())) setTranscript(t);
+            }
+
+            boolean hasEdits() {
+              if (transcript == null || autoText == null) return false;
+              String cur = transcript.getText().toString();
+              return cur.trim().length() > 0 && !cur.equals(autoText);
+            }
+
+            // Soạn lời bình từ ván vừa chơi, đặt vào ô để người dùng xem và sửa. Trả về false nếu chưa có ván nào.
+            boolean composeText() {
+              ArrayList<String[]> mv = GameLog.read(this);
+              if (mv.isEmpty()) return false;
+              loadCmOpts();
+              String t = Commentary.compose(mv);
+              autoText = t;
+              writeText(GameLog.autoFile(this), t);
+              writeText(GameLog.textFile(this), t);
+              setTranscript(t);
+              return true;
+            }
+
+            // Âm thanh cũ không còn khớp với lời bình hay giọng đọc hiện tại nên xoá đi
+            void dropAudio() {
+              stopPlay();
+              File a = GameLog.audioFile(this);
+              if (a.exists()) a.delete();
+            }
+
+            void onComposeClick() {
+              if (genBusy) return;
+              if (hasEdits()) {
+                new AlertDialog.Builder(this)
+                  .setTitle("Soạn lại lời bình?")
+                  .setMessage("Phần bạn đã chỉnh sửa sẽ bị thay bằng bản soạn mới. Tiếp tục?")
+                  .setPositiveButton("Soạn lại", new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface d, int w) { doCompose(); }
+                  })
+                  .setNegativeButton("Giữ bản của tôi", null)
+                  .show();
+              } else doCompose();
+            }
+
+            void doCompose() {
+              if (!composeText()) {
+                Toast.makeText(this, "Chưa có ván nào được ghi để soạn lời bình", Toast.LENGTH_SHORT).show();
+                return;
+              }
+              dropAudio();
+              refreshAudioUi();
+              Toast.makeText(this, "Đã soạn lời bình. Bạn có thể sửa trực tiếp trong ô bên dưới", Toast.LENGTH_SHORT).show();
+            }
+
+            void revertText() {
+              if (genBusy || autoText == null) return;
+              setTranscript(autoText);
+              saveText();
+              dropAudio();
+              refreshAudioUi();
+            }
+
+            // Người dùng gõ vào ô: âm thanh cũ không còn đúng nên xoá; lưu chữ sau một nhịp ngắn
+            void onTranscriptEdited() {
+              if (progText) return;
+              if (!genBusy && GameLog.audioFile(this).exists()) {
+                dropAudio();
+                Toast.makeText(this, "Đã sửa lời bình: âm thanh cũ được xoá, bấm Tạo âm thanh để làm bản mới", Toast.LENGTH_SHORT).show();
+              }
+              refreshAudioUi();
+              ui.removeCallbacks(saveRun);
+              ui.postDelayed(saveRun, 700);
+            }
+
+            // Đổi độ dài / giọng điệu / mặt hại: lời bình cũ không còn khớp tùy chọn
             void optChanged() {
               refreshOptBtns();
-              stopPlay();
-              if (GameLog.audioFile(this).exists()) {
-                GameLog.audioFile(this).delete();
-                if (transcript != null) transcript.setText("");
-                Toast.makeText(this, "Đã đổi tùy chọn. Bấm Tạo lại hoặc TẠO & TẢI để áp dụng", Toast.LENGTH_SHORT).show();
+              dropAudio();
+              if (transcript != null && transcript.getText().toString().trim().length() > 0) {
+                if (hasEdits()) Toast.makeText(this, "Đã đổi tùy chọn. Lời bình bạn đã sửa được giữ nguyên; bấm Soạn lời bình nếu muốn soạn lại theo tùy chọn mới", Toast.LENGTH_LONG).show();
+                else if (composeText()) Toast.makeText(this, "Đã soạn lại lời bình theo tùy chọn mới", Toast.LENGTH_SHORT).show();
               }
+              refreshAudioUi();
+            }
+
+            // Đổi tốc độ / giọng đọc: chỉ âm thanh cũ không còn đúng, lời bình giữ nguyên
+            void audioStale() {
+              refreshOptBtns();
+              boolean had = GameLog.audioFile(this).exists();
+              dropAudio();
+              if (had) Toast.makeText(this, "Đã đổi tùy chọn đọc. Bấm Tạo âm thanh để áp dụng", Toast.LENGTH_SHORT).show();
               refreshAudioUi();
             }
 
@@ -3161,7 +3616,7 @@ jobs:
               SharedPreferences c = cfg();
               c.edit().putInt("ttsRate", (c.getInt("ttsRate", 1) + 1) % RATE.length).apply();
               applyVoice(true);
-              optChanged();
+              audioStale();
             }
 
             void toggleFmt() {
@@ -3381,6 +3836,11 @@ jobs:
           import android.os.HandlerThread;
           import android.os.IBinder;
           import android.os.Looper;
+          import android.speech.tts.TextToSpeech;
+          import android.speech.tts.UtteranceProgressListener;
+          import android.speech.tts.Voice;
+          import java.util.Locale;
+          import java.util.Set;
           import android.text.SpannableStringBuilder;
           import android.text.Spanned;
           import android.text.style.RelativeSizeSpan;
@@ -3422,6 +3882,10 @@ jobs:
             static final int PONDER_MS = 12000;
             volatile String engNote = "Đang nạp Pikafish…";
             TextView rbtn, ebtn, sbtn, abtn, lbtn;
+            TextToSpeech tts;               // giọng đọc lời bình trực tiếp (chỉ tạo khi bật tiếng)
+            boolean ttsOk = false;
+            volatile int ttsPending = 0;
+            int liveSeq = 0;
             volatile boolean gridLocked;     // true = đã cố định lưới bàn cờ: không tự căn/đổi lưới nữa
             volatile boolean autoPlay;       // tự chạm đi nước gợi ý (cần bật Trợ năng)
             volatile long autoGen;           // đổi số này để huỷ lần tự đi đang chờ
@@ -3490,6 +3954,7 @@ jobs:
               lbtn = makeFloat("🔒 Cố định lưới", 0xEE455A64, Math.max(0, W - 380), (int) (0.05f * H) + 240, new Runnable() {
                 @Override public void run() { toggleLock(); }
               });
+              if (liveOn()) initLiveTts();
               bg.postDelayed(loop, 800);
               return START_NOT_STICKY;
             }
@@ -3681,6 +4146,7 @@ jobs:
               GameLog.clear(this);
               hasEval = false;
               autoGen++;
+              stopLive();
               loadMode();
               cancel = true;
               waiting = false;
@@ -3753,6 +4219,7 @@ jobs:
                 else { he = false; why = (why.length() > 0 ? why + ";" : "") + "OFF"; }   // bạn đi khác nước máy gợi ý: điểm không áp cho nước này
               }
               GameLog.add(this, mine, text, cap, he, ev, why, pv);
+              speakLive();
             }
             void say(final String big, final String small) {
               ui.post(new Runnable() {
@@ -4374,6 +4841,74 @@ jobs:
             void hideArrow() { }
             void settleArrow() { }
 
+            // ---------- Lời bình trực tiếp bằng giọng nói (bật/tắt bằng ô chọn ở màn hình chính, không có nút nổi) ----------
+            boolean liveOn() { return sp.getBoolean("cmLive", false) && sp.getBoolean("cmOn", true); }
+
+            void initLiveTts() {
+              if (tts != null) return;
+              try {
+                tts = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
+                  @Override public void onInit(int st) {
+                    if (st != TextToSpeech.SUCCESS || tts == null) { ttsOk = false; return; }
+                    int r = tts.setLanguage(new Locale("vi", "VN"));
+                    ttsOk = r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED;
+                    applyLiveVoice();
+                  }
+                });
+                tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                  @Override public void onStart(String id) { }
+                  @Override public void onDone(String id) { if (ttsPending > 0) ttsPending--; }
+                  @Override public void onError(String id) { if (ttsPending > 0) ttsPending--; }
+                });
+              } catch (Throwable t) { tts = null; ttsOk = false; }
+            }
+
+            // Dùng cùng giọng, độ trầm, tốc độ đã chọn ở mục Lời bình ván cờ
+            void applyLiveVoice() {
+              try {
+                String want = sp.getString("ttsVoice", "");
+                Set<Voice> all = tts.getVoices();
+                if (all != null && want.length() > 0) for (Voice v : all) if (v.getName().equals(want)) { tts.setVoice(v); break; }
+                tts.setPitch(MainActivity.PITCH[Math.max(0, Math.min(MainActivity.PITCH.length - 1, sp.getInt("ttsPitch", 2)))]);
+                tts.setSpeechRate(MainActivity.RATE[Math.max(0, Math.min(MainActivity.RATE.length - 1, sp.getInt("ttsRate", 1)))]);
+              } catch (Throwable t) { }
+            }
+
+            // Vừa ghi một nước: soạn câu bình cho nước đó rồi đọc. Tắt tiếng thì không làm gì cả.
+            void speakLive() {
+              if (!liveOn()) return;
+              final String text;
+              try {
+                text = Commentary.live(GameLog.read(this), sp.getInt("cmLevel", 1), sp.getInt("cmTone", 0), sp.getBoolean("cmRisk", true));
+              } catch (Throwable t) { return; }
+              if (text == null || text.length() == 0) return;
+              ui.post(new Runnable() {
+                @Override public void run() { liveSay(text); }
+              });
+            }
+
+            void liveSay(String text) {
+              if (!liveOn()) return;
+              if (tts == null) { initLiveTts(); return; }   // lần đầu: giọng đọc đang khởi động, bỏ qua câu này
+              if (!ttsOk) return;
+              try {
+                int mode = TextToSpeech.QUEUE_ADD;
+                if (ttsPending >= 2) { mode = TextToSpeech.QUEUE_FLUSH; ttsPending = 0; }   // nước đi dồn dập: bỏ câu cũ, đọc câu mới nhất
+                ttsPending++;
+                tts.speak(Commentary.speakable(text), mode, null, "live" + (liveSeq++));
+              } catch (Throwable t) { }
+            }
+
+            void stopLive() {
+              ttsPending = 0;
+              try { if (tts != null) tts.stop(); } catch (Throwable t) { }
+            }
+
+            // Gọi khi người dùng đổi công tắc tiếng ở màn hình chính
+            void liveChanged() {
+              if (liveOn()) { initLiveTts(); if (tts != null) applyLiveVoice(); } else stopLive();
+            }
+
             @Override public void onDestroy() {
               running = false;
               inst = null;
@@ -4384,6 +4919,8 @@ jobs:
               try { if (sbtn != null) wm.removeView(sbtn); } catch (Exception e) { }
               try { if (abtn != null) wm.removeView(abtn); } catch (Exception e) { }
               try { if (lbtn != null) wm.removeView(lbtn); } catch (Exception e) { }
+              try { if (tts != null) { tts.stop(); tts.shutdown(); } } catch (Throwable e) { }
+              tts = null;
               autoPlay = false;
               gridLocked = false;
               try { if (vd != null) vd.release(); } catch (Exception e) { }

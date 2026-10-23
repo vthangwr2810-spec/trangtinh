@@ -84,6 +84,9 @@ jobs:
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
             <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
             <uses-permission android:name="android.permission.VIBRATE"/>
+            <queries>
+              <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>
+            </queries>
             <application android:label="Cờ Tướng Tự Động" android:theme="@android:style/Theme.DeviceDefault.Light">
               <activity android:name=".MainActivity" android:exported="true">
                 <intent-filter>
@@ -2031,6 +2034,163 @@ jobs:
           }
           EOF
           mkdir -p $(dirname app/src/main/java/com/cotuong/helper/MainActivity.java)
+          cat > app/src/main/java/com/cotuong/helper/GameLog.java <<'EOF'
+          package com.cotuong.helper;
+
+          import android.content.Context;
+          import java.io.BufferedReader;
+          import java.io.File;
+          import java.io.FileInputStream;
+          import java.io.FileOutputStream;
+          import java.io.InputStreamReader;
+          import java.util.ArrayList;
+
+          // Lịch sử nước đi của ván đang chơi, lưu ra file để vẫn còn sau khi bấm Dừng.
+          // Mỗi dòng: bên(1=mình,0=đối thủ)|ký hiệu nước đi|quân bị ăn|có điểm engine(0/1)|điểm
+          class GameLog {
+            static File logFile(Context c) { return new File(c.getFilesDir(), "gamelog.txt"); }
+            static File audioFile(Context c) { return new File(c.getFilesDir(), "commentary.wav"); }
+
+            // Bắt đầu ván mới: xoá lịch sử và âm thanh của ván cũ
+            static synchronized void clear(Context c) {
+              logFile(c).delete();
+              audioFile(c).delete();
+            }
+
+            static synchronized void add(Context c, boolean mine, String move, String cap, boolean hasEval, int eval) {
+              try {
+                FileOutputStream o = new FileOutputStream(logFile(c), true);
+                String line = (mine ? "1" : "0") + "|" + move.replace('|', ' ').replace('\n', ' ') + "|" + cap + "|" + (hasEval ? "1" : "0") + "|" + eval + "\n";
+                o.write(line.getBytes("UTF-8"));
+                o.close();
+              } catch (Throwable t) { }
+            }
+
+            static synchronized ArrayList<String[]> read(Context c) {
+              ArrayList<String[]> out = new ArrayList<String[]>();
+              try {
+                File f = logFile(c);
+                if (!f.exists()) return out;
+                BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), "UTF-8"));
+                String s;
+                while ((s = r.readLine()) != null) {
+                  String[] p = s.split("\\|", -1);
+                  if (p.length >= 5) out.add(p);
+                }
+                r.close();
+              } catch (Throwable t) { }
+              return out;
+            }
+          }
+          EOF
+          cat > app/src/main/java/com/cotuong/helper/Commentary.java <<'EOF'
+          package com.cotuong.helper;
+
+          import java.util.ArrayList;
+          import java.util.List;
+
+          // Soạn lời bình tiếng Việt (giọng "mình" và "đối thủ") từ lịch sử nước đi của ván.
+          class Commentary {
+            static final String[] NUM = {"không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"};
+
+            static final String[] MINE_MOVE = {
+              "Mình đi %s.", "Tiếp theo, mình đi %s.", "Mình tiếp tục với %s.", "Bên mình chọn %s.", "Mình đưa ra nước %s."
+            };
+            static final String[] OPP_MOVE = {
+              "Đối thủ đáp lại bằng %s.", "Đối thủ đi %s.", "Phía đối thủ chọn %s.", "Đối thủ phản công với %s.", "Đối thủ đi tiếp %s."
+            };
+            static final String[] MINE_CAP = {"Nước này ăn %s của đối thủ.", "Mình thu về %s của đối thủ.", "Ăn được %s của đối thủ."};
+            static final String[] OPP_CAP = {"Tiếc là đối thủ ăn mất %s của mình.", "Đối thủ ăn %s của mình.", "Mình mất %s ở nước này."};
+            static final String[] EVAL = {
+              "Máy đã nhìn thấy đường chiếu bí, thế cờ gần như ngã ngũ.",
+              "Lúc này thế cờ đã nghiêng hẳn về phía mình.",
+              "Mình bắt đầu nhỉnh hơn một chút.",
+              "Thế cờ đang khá cân bằng.",
+              "Mình đang hơi lép vế, cần cẩn thận.",
+              "Thế cờ đang khó khăn cho mình.",
+              "Nguy rồi, đối thủ đã có đường chiếu bí."
+            };
+            static final String[] FINAL = {
+              "Ở những nước cuối, mình đã nắm chắc thế thắng.",
+              "Ở những nước cuối, thế cờ nghiêng hẳn về phía mình.",
+              "Ở những nước cuối, mình nhỉnh hơn một chút.",
+              "Ở những nước cuối, thế cờ vẫn khá cân bằng.",
+              "Ở những nước cuối, mình hơi lép vế.",
+              "Ở những nước cuối, thế cờ không còn thuận lợi cho mình.",
+              "Ở những nước cuối, đối thủ đã nắm thế chiếu bí."
+            };
+
+            // Đổi số trong ký hiệu nước đi ("Pháo 2 bình 5") thành chữ để giọng đọc phát âm chắc chắn
+            static String spoken(String t) {
+              t = t.replace(" (lật)", ", lật quân");
+              StringBuilder b = new StringBuilder();
+              for (int i = 0; i < t.length(); i++) {
+                char c = t.charAt(i);
+                if (c >= '0' && c <= '9') b.append(NUM[c - '0']);
+                else b.append(c);
+              }
+              return b.toString();
+            }
+
+            static int parse(String s) {
+              try { return Integer.parseInt(s.trim()); } catch (Exception e) { return 0; }
+            }
+
+            // 0 sắp chiếu bí đối thủ, 1 hơn nhiều, 2 hơn nhẹ, 3 cân bằng, 4 kém nhẹ, 5 kém nhiều, 6 sắp bị chiếu bí
+            static int cat(int ev) {
+              if (ev >= 20000) return 0;
+              if (ev <= -20000) return 6;
+              if (ev >= 300) return 1;
+              if (ev >= 100) return 2;
+              if (ev > -100) return 3;
+              if (ev > -300) return 4;
+              return 5;
+            }
+
+            static List<String> script(List<String[]> mv) {
+              ArrayList<String> out = new ArrayList<String>();
+              int n = mv.size();
+              out.add("Chào mọi người. Đây là lời bình ván cờ tướng vừa rồi, gồm " + n + " nước đi.");
+              int mi = 0, oi = 0, cm = 0, co = 0, lastCat = -1;
+              for (int i = 0; i < n; i++) {
+                String[] m = mv.get(i);
+                boolean mine = "1".equals(m[0]);
+                String mvTxt = spoken(m[1]);
+                String s;
+                if (i == 0) s = (mine ? "Mình" : "Đối thủ") + " mở đầu bằng " + mvTxt + ".";
+                else if (mine) s = MINE_MOVE[mi++ % MINE_MOVE.length].replace("%s", mvTxt);
+                else s = OPP_MOVE[oi++ % OPP_MOVE.length].replace("%s", mvTxt);
+                out.add(s);
+                if (m[2].length() > 0) {
+                  if (mine) { out.add(MINE_CAP[cm % MINE_CAP.length].replace("%s", m[2])); cm++; }
+                  else { out.add(OPP_CAP[co % OPP_CAP.length].replace("%s", m[2])); co++; }
+                }
+                if (mine && "1".equals(m[3])) {
+                  int c = cat(parse(m[4]));
+                  if (c != lastCat) { out.add(EVAL[c]); lastCat = c; }
+                }
+              }
+              if (cm == 0 && co == 0) out.add("Tổng kết ván cờ. Hai bên chưa ăn quân nào.");
+              else out.add("Tổng kết ván cờ. Mình ăn được " + cm + " quân của đối thủ, còn đối thủ ăn của mình " + co + " quân.");
+              if (lastCat >= 0) out.add(FINAL[lastCat]);
+              out.add("Cảm ơn mọi người đã xem. Hẹn gặp lại ở ván sau.");
+              return out;
+            }
+
+            // Gộp các câu thành từng đoạn không quá max ký tự (bộ đọc giọng nói giới hạn độ dài mỗi lần)
+            static List<String> chunks(List<String[]> mv, int max) {
+              ArrayList<String> res = new ArrayList<String>();
+              StringBuilder cur = new StringBuilder();
+              for (String s : script(mv)) {
+                if (cur.length() > 0 && cur.length() + s.length() + 1 > max) { res.add(cur.toString()); cur.setLength(0); }
+                if (cur.length() > 0) cur.append(' ');
+                cur.append(s);
+              }
+              if (cur.length() > 0) res.add(cur.toString());
+              return res;
+            }
+          }
+          EOF
           cat > app/src/main/java/com/cotuong/helper/MainActivity.java <<'EOF'
           package com.cotuong.helper;
 
@@ -2052,9 +2212,42 @@ jobs:
           import android.widget.ScrollView;
           import android.widget.TextView;
           import android.widget.Toast;
+          import android.content.ContentValues;
+          import android.media.MediaPlayer;
+          import android.os.Environment;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.provider.MediaStore;
+          import android.speech.tts.TextToSpeech;
+          import android.speech.tts.UtteranceProgressListener;
+          import android.speech.tts.Voice;
+          import android.text.TextUtils;
+          import java.io.File;
+          import java.io.FileInputStream;
+          import java.io.FileOutputStream;
+          import java.io.IOException;
+          import java.io.OutputStream;
+          import java.io.RandomAccessFile;
+          import java.text.SimpleDateFormat;
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.Comparator;
+          import java.util.Date;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Set;
 
           public class MainActivity extends Activity {
             TextView status;
+            static final float[] PITCH = {1.0f, 0.92f, 0.85f, 0.78f, 0.7f};
+            final Handler ui = new Handler(Looper.getMainLooper());
+            TextToSpeech tts;
+            boolean ttsReady = false, genBusy = false, saveAfterGen = false;
+            ArrayList<Voice> viVoices = new ArrayList<Voice>();
+            int voiceIdx = 0;
+            Button voiceBtn, pitchBtn, genBtn, playBtn, dlBtn;
+            TextView audioInfo, transcript;
+            MediaPlayer mp;
 
             @Override protected void onCreate(Bundle s) {
               super.onCreate(s);
@@ -2134,8 +2327,51 @@ jobs:
                   Intent i = new Intent(MainActivity.this, CaptureService.class);
                   i.setAction("STOP");
                   startService(i);
+                  ui.postDelayed(new Runnable() { public void run() { refreshAudioUi(); maybeAutoGen(); } }, 1500);
+                  ui.postDelayed(new Runnable() { public void run() { refreshAudioUi(); maybeAutoGen(); } }, 4000);
                 }
               }));
+              final LinearLayout box = new LinearLayout(this);
+              box.setOrientation(LinearLayout.VERTICAL);
+              box.setVisibility(View.GONE);
+              l.addView(btn("Lời bình ván cờ (bấm để mở)", new View.OnClickListener() {
+                public void onClick(View v) {
+                  boolean show = box.getVisibility() != View.VISIBLE;
+                  box.setVisibility(show ? View.VISIBLE : View.GONE);
+                  ((Button) v).setText(show ? "Lời bình ván cờ (bấm để ẩn)" : "Lời bình ván cờ (bấm để mở)");
+                }
+              }));
+              l.addView(box);
+              audioInfo = new TextView(this);
+              audioInfo.setTextSize(14);
+              audioInfo.setPadding(0, 0, 0, 8);
+              box.addView(audioInfo);
+              voiceBtn = btn("Giọng đọc", new View.OnClickListener() {
+                public void onClick(View v) { nextVoice(); }
+              });
+              box.addView(voiceBtn);
+              pitchBtn = btn("Độ trầm", new View.OnClickListener() {
+                public void onClick(View v) { nextPitch(); }
+              });
+              box.addView(pitchBtn);
+              genBtn = btn("Tạo lại lời bình (chỉ tạo, chưa tải)", new View.OnClickListener() {
+                public void onClick(View v) { genAudio(); }
+              });
+              box.addView(genBtn);
+              playBtn = btn("Nghe lại", new View.OnClickListener() {
+                public void onClick(View v) { togglePlay(); }
+              });
+              box.addView(playBtn);
+              dlBtn = btn("TẠO & TẢI ÂM THANH VỀ MÁY", new View.OnClickListener() {
+                public void onClick(View v) { createAndSave(); }
+              });
+              box.addView(dlBtn);
+              transcript = new TextView(this);
+              transcript.setTextSize(13);
+              transcript.setTextIsSelectable(true);
+              transcript.setPadding(0, 16, 0, 0);
+              box.addView(transcript);
+              initTts();
               ScrollView sv = new ScrollView(this);
               sv.addView(l);
               setContentView(sv);
@@ -2146,6 +2382,309 @@ jobs:
               boolean ov = Settings.canDrawOverlays(this);
               boolean ac = AutoTapService.inst != null;
               status.setText("Hiển thị trên ứng dụng khác: " + (ov ? "ĐÃ CẤP" : "CHƯA CẤP") + "\nTrợ năng (tự chạm): " + (ac ? "ĐÃ BẬT" : "CHƯA BẬT"));
+              refreshAudioUi();
+              maybeAutoGen();
+            }
+
+            // ---------------- Lời bình bằng giọng nói (dùng bộ đọc có sẵn trên điện thoại, không cần mạng) ----------------
+
+            void initTts() {
+              tts = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
+                @Override public void onInit(int st) {
+                  if (st != TextToSpeech.SUCCESS) {
+                    ttsReady = false;
+                    audioInfo.setText("Điện thoại chưa có bộ đọc giọng nói (Text-to-speech).");
+                    return;
+                  }
+                  int r = tts.setLanguage(new Locale("vi", "VN"));
+                  ttsReady = r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED;
+                  viVoices.clear();
+                  try {
+                    Set<Voice> all = tts.getVoices();
+                    ArrayList<Voice> offline = new ArrayList<Voice>();
+                    if (all != null) for (Voice v : all) {
+                      if (!"vi".equals(v.getLocale().getLanguage())) continue;
+                      viVoices.add(v);
+                      if (!v.isNetworkConnectionRequired()) offline.add(v);
+                    }
+                    if (!offline.isEmpty()) { viVoices.clear(); viVoices.addAll(offline); }
+                  } catch (Throwable t) { }
+                  Collections.sort(viVoices, new Comparator<Voice>() {
+                    public int compare(Voice a, Voice b) { return a.getName().compareTo(b.getName()); }
+                  });
+                  applyVoice(false);
+                  refreshAudioUi();
+                  maybeAutoGen();
+                }
+              });
+            }
+
+            void applyVoice(boolean speak) {
+              if (tts == null) return;
+              SharedPreferences c = getSharedPreferences("cfg", MODE_PRIVATE);
+              String want = c.getString("ttsVoice", "");
+              int idx = -1;
+              for (int i = 0; i < viVoices.size(); i++) if (viVoices.get(i).getName().equals(want)) idx = i;
+              voiceIdx = idx >= 0 ? idx : 0;
+              if (!viVoices.isEmpty()) {
+                try { tts.setVoice(viVoices.get(voiceIdx)); } catch (Throwable t) { }
+              }
+              int pi = Math.max(0, Math.min(PITCH.length - 1, c.getInt("ttsPitch", 2)));
+              tts.setPitch(PITCH[pi]);
+              tts.setSpeechRate(0.95f);
+              boolean ok = ttsReady && !viVoices.isEmpty();
+              voiceBtn.setText(ok ? "Giọng đọc " + (voiceIdx + 1) + "/" + viVoices.size() + ": " + viVoices.get(voiceIdx).getName() + " (bấm để đổi)"
+                  : "Mở cài đặt giọng nói của máy (chưa thấy giọng tiếng Việt)");
+              pitchBtn.setText("Độ trầm: " + (pi + 1) + "/" + PITCH.length + " (bấm để đổi)");
+              if (speak && ttsReady && CaptureService.inst == null) tts.speak("Xin chào, đây là giọng đọc lời bình ván cờ tướng.", TextToSpeech.QUEUE_FLUSH, null, "demo");
+            }
+
+            void nextVoice() {
+              if (!ttsReady || viVoices.isEmpty()) {
+                try { startActivity(new Intent("com.android.settings.TTS_SETTINGS")); }
+                catch (Throwable t) { Toast.makeText(this, "Hãy vào Cài đặt > Ngôn ngữ > Chuyển văn bản thành giọng nói để tải giọng tiếng Việt", Toast.LENGTH_LONG).show(); }
+                return;
+              }
+              int n = (voiceIdx + 1) % viVoices.size();
+              getSharedPreferences("cfg", MODE_PRIVATE).edit().putString("ttsVoice", viVoices.get(n).getName()).apply();
+              applyVoice(true);
+            }
+
+            void nextPitch() {
+              SharedPreferences c = getSharedPreferences("cfg", MODE_PRIVATE);
+              int n = (c.getInt("ttsPitch", 2) + 1) % PITCH.length;
+              c.edit().putInt("ttsPitch", n).apply();
+              applyVoice(true);
+            }
+
+            void refreshAudioUi() {
+              if (audioInfo == null) return;
+              int n = GameLog.read(this).size();
+              File a = GameLog.audioFile(this);
+              boolean has = a.exists();
+              boolean run = CaptureService.inst != null;
+              if (!genBusy) {
+                String t;
+                if (n == 0) t = "Chưa có ván nào được ghi.";
+                else if (has) t = "Ván vừa rồi: " + n + " nước. Âm thanh lời bình đã sẵn sàng (" + String.format(Locale.US, "%.1f", a.length() / 1048576.0) + " MB).";
+                else if (run) t = "Đang chơi: đã ghi âm thầm " + n + " nước (không phát tiếng).";
+                else t = "Ván vừa rồi: " + n + " nước. Bấm TẠO & TẢI khi cần dùng.";
+                audioInfo.setText(t);
+              }
+              genBtn.setEnabled(n > 0 && !genBusy && ttsReady);
+              playBtn.setEnabled(has && !genBusy && !run);
+              dlBtn.setEnabled(n > 0 && !genBusy && ttsReady);
+            }
+
+            // Không tự tạo âm thanh nữa: chỉ tạo khi bạn bấm nút
+            void maybeAutoGen() { }
+
+            void genAudio() {
+              if (genBusy) return;
+              if (!ttsReady) {
+                Toast.makeText(this, "Máy chưa có giọng đọc tiếng Việt. Bấm nút Giọng đọc để mở cài đặt.", Toast.LENGTH_LONG).show();
+                return;
+              }
+              ArrayList<String[]> mv = GameLog.read(this);
+              if (mv.isEmpty()) { refreshAudioUi(); return; }
+              stopPlay();
+              GameLog.audioFile(this).delete();
+              int max = 1500;
+              try { max = Math.min(max, TextToSpeech.getMaxSpeechInputLength() - 200); } catch (Throwable t) { }
+              List<String> ch = Commentary.chunks(mv, Math.max(300, max));
+              transcript.setText(TextUtils.join("\n\n", ch));
+              genBusy = true;
+              refreshAudioUi();
+              synthNext(ch, 0, new ArrayList<File>());
+            }
+
+            void synthNext(final List<String> ch, final int i, final ArrayList<File> parts) {
+              if (i >= ch.size()) { finishAudio(parts); return; }
+              final File f = new File(getCacheDir(), "tts_part" + i + ".wav");
+              f.delete();
+              parts.add(f);
+              audioInfo.setText("Đang tạo âm thanh… " + (i + 1) + "/" + ch.size());
+              tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override public void onStart(String id) { }
+                @Override public void onDone(String id) {
+                  ui.post(new Runnable() { public void run() { synthNext(ch, i + 1, parts); } });
+                }
+                @Override public void onError(String id) {
+                  ui.post(new Runnable() { public void run() { genFail("bộ đọc giọng nói báo lỗi"); } });
+                }
+              });
+              int rc = tts.synthesizeToFile(ch.get(i), new Bundle(), f, "part" + i);
+              if (rc != TextToSpeech.SUCCESS) genFail("không bắt đầu được việc đọc");
+            }
+
+            void genFail(String why) {
+              genBusy = false;
+              refreshAudioUi();
+              audioInfo.append("\nTạo âm thanh thất bại: " + why + ".");
+              saveAfterGen = false;
+            }
+
+            void finishAudio(final ArrayList<File> parts) {
+              audioInfo.setText("Đang ghép âm thanh…");
+              new Thread(new Runnable() {
+                public void run() {
+                  final boolean ok = mergeWav(parts, GameLog.audioFile(MainActivity.this));
+                  for (File p : parts) p.delete();
+                  ui.post(new Runnable() {
+                    public void run() {
+                      genBusy = false;
+                      refreshAudioUi();
+                      if (!ok) audioInfo.append("\nGhép âm thanh lỗi, thử bấm lại.");
+                          if (ok && saveAfterGen) saveToDownloads();
+                          saveAfterGen = false;
+                    }
+                  });
+                }
+              }).start();
+            }
+
+            static int le16(byte[] b, int o) { return (b[o] & 255) | ((b[o + 1] & 255) << 8); }
+            static int le32(byte[] b, int o) { return le16(b, o) | (le16(b, o + 2) << 16); }
+
+            // Ghép nhiều file WAV (cùng định dạng) thành một file
+            static boolean mergeWav(List<File> parts, File out) {
+              RandomAccessFile raf = null;
+              try {
+                raf = new RandomAccessFile(out, "rw");
+                raf.setLength(0);
+                raf.write(new byte[44]);
+                long total = 0;
+                int ch = 1, rate = 22050, bits = 16;
+                boolean got = false;
+                for (File p : parts) {
+                  if (!p.exists() || p.length() < 44) continue;
+                  byte[] b = new byte[(int) p.length()];
+                  FileInputStream in = new FileInputStream(p);
+                  int got0 = 0;
+                  while (got0 < b.length) {
+                    int r = in.read(b, got0, b.length - got0);
+                    if (r < 0) break;
+                    got0 += r;
+                  }
+                  in.close();
+                  int pos = 12, dataOff = -1, dataLen = 0;
+                  while (pos + 8 <= b.length) {
+                    String id = new String(b, pos, 4, "US-ASCII");
+                    int len = le32(b, pos + 4);
+                    if (id.equals("data")) { dataOff = pos + 8; dataLen = len; break; }
+                    if (id.equals("fmt ") && pos + 24 <= b.length) { ch = le16(b, pos + 10); rate = le32(b, pos + 12); bits = le16(b, pos + 22); got = true; }
+                    if (len < 0) break;
+                    pos += 8 + len + (len & 1);
+                  }
+                  if (dataOff < 0) continue;
+                  if (dataLen <= 0 || dataOff + (long) dataLen > b.length) dataLen = b.length - dataOff;
+                  raf.write(b, dataOff, dataLen);
+                  total += dataLen;
+                }
+                if (total <= 0 || !got) { raf.close(); out.delete(); return false; }
+                java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                bb.put("RIFF".getBytes("US-ASCII"));
+                bb.putInt((int) (36 + total));
+                bb.put("WAVE".getBytes("US-ASCII"));
+                bb.put("fmt ".getBytes("US-ASCII"));
+                bb.putInt(16);
+                bb.putShort((short) 1);
+                bb.putShort((short) ch);
+                bb.putInt(rate);
+                bb.putInt(rate * ch * bits / 8);
+                bb.putShort((short) (ch * bits / 8));
+                bb.putShort((short) bits);
+                bb.put("data".getBytes("US-ASCII"));
+                bb.putInt((int) total);
+                raf.seek(0);
+                raf.write(bb.array());
+                raf.close();
+                return true;
+              } catch (Throwable t) {
+                try { if (raf != null) raf.close(); } catch (Throwable e) { }
+                out.delete();
+                return false;
+              }
+            }
+
+            // Một nút: chưa có âm thanh thì tạo rồi lưu luôn vào Tải xuống; có rồi thì lưu ngay
+            void createAndSave() {
+              if (genBusy) return;
+              if (GameLog.audioFile(this).exists()) { saveToDownloads(); return; }
+              saveAfterGen = true;
+              genAudio();
+              if (!genBusy) saveAfterGen = false;
+            }
+
+            void togglePlay() {
+              if (mp != null) { stopPlay(); return; }
+              if (CaptureService.inst != null) { Toast.makeText(this, "Đang chơi: dừng rồi hãy nghe lại để không có tiếng khi đánh", Toast.LENGTH_SHORT).show(); return; }
+              File a = GameLog.audioFile(this);
+              if (!a.exists()) return;
+              try {
+                mp = new MediaPlayer();
+                mp.setDataSource(a.getAbsolutePath());
+                mp.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                  public void onCompletion(MediaPlayer m) { stopPlay(); }
+                });
+                mp.prepare();
+                mp.start();
+                playBtn.setText("Dừng nghe");
+              } catch (Throwable t) {
+                stopPlay();
+                Toast.makeText(this, "Không phát được: " + t, Toast.LENGTH_LONG).show();
+              }
+            }
+
+            void stopPlay() {
+              if (mp != null) {
+                try { mp.stop(); } catch (Throwable t) { }
+                try { mp.release(); } catch (Throwable t) { }
+                mp = null;
+              }
+              if (playBtn != null) playBtn.setText("Nghe lại");
+            }
+
+            // Chép file âm thanh vào thư mục Tải xuống để đưa vào CapCut/TikTok
+            void saveToDownloads() {
+              File a = GameLog.audioFile(this);
+              if (!a.exists()) { Toast.makeText(this, "Chưa có âm thanh để tải", Toast.LENGTH_SHORT).show(); return; }
+              String name = "co-tuong-" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".wav";
+              try {
+                OutputStream os;
+                String where;
+                if (Build.VERSION.SDK_INT >= 29) {
+                  ContentValues cv = new ContentValues();
+                  cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                  cv.put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav");
+                  cv.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                  Uri u = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                  if (u == null) throw new IOException("không tạo được file");
+                  os = getContentResolver().openOutputStream(u);
+                  where = "thư mục Tải xuống";
+                } else {
+                  File dir = getExternalFilesDir(Environment.DIRECTORY_MUSIC);
+                  dir.mkdirs();
+                  File f = new File(dir, name);
+                  os = new FileOutputStream(f);
+                  where = f.getAbsolutePath();
+                }
+                FileInputStream in = new FileInputStream(a);
+                byte[] buf = new byte[65536];
+                int r;
+                while ((r = in.read(buf)) > 0) os.write(buf, 0, r);
+                in.close();
+                os.close();
+                Toast.makeText(this, "Đã lưu " + name + " vào " + where, Toast.LENGTH_LONG).show();
+              } catch (Throwable t) {
+                Toast.makeText(this, "Lưu thất bại: " + t, Toast.LENGTH_LONG).show();
+              }
+            }
+
+            @Override protected void onDestroy() {
+              stopPlay();
+              try { if (tts != null) { tts.stop(); tts.shutdown(); } } catch (Throwable t) { }
+              super.onDestroy();
             }
 
             Button btn(String s, View.OnClickListener c) {
@@ -2247,6 +2786,8 @@ jobs:
             int mineC = 1;                   // màu của mình trên màn hình: 1 đỏ, 2 đen
             volatile boolean waiting, cancel;  // waiting: đang chờ đối thủ đi
             int stableN = 0, miss = 0, shotFail = 0;
+            int lastEval = 0;
+            boolean hasEval = false;
             String lastNote = "";
             final float[] g = new float[4];   // x0, y0, bước ngang, bước dọc
             SharedPreferences sp;
@@ -2272,6 +2813,8 @@ jobs:
               String a = in.getAction();
               if ("STOP".equals(a)) { stopSelf(); return START_NOT_STICKY; }
               if (running) return START_NOT_STICKY;
+              GameLog.clear(this);   // phiên mới = ván mới: xoá lịch sử và âm thanh ván cũ
+              hasEval = false;
               startFg();
               DisplayMetrics dm = new DisplayMetrics();
               wm.getDefaultDisplay().getRealMetrics(dm);
@@ -2489,6 +3032,8 @@ jobs:
             // Ván mới: xoá toàn bộ trí nhớ, báo Pikafish bắt đầu ván mới và đọc/tính lại từ đầu
             void newGame() {
               if (!running) return;
+              GameLog.clear(this);
+              hasEval = false;
               autoGen++;
               loadMode();
               cancel = true;
@@ -2536,6 +3081,25 @@ jobs:
                 if (eng.inCheck(1)) return "Bên dưới đang bị chiếu: đọc sai quân, hoặc chọn nhầm bên đi trước";
               }
               return null;
+            }
+            // Ghi nước đi vào lịch sử ván (để làm lời bình bằng giọng nói sau khi dừng)
+            String capName(int p) {
+              int a = Math.abs(p);
+              if (a == 0) return "";
+              if (a <= 7) return Notation.NAME[a];
+              return "quân úp";
+            }
+
+            void logMove(boolean mine, String text, String cap) {
+              int ev = 0;
+              boolean he = false;
+              if (mine && hasEval) {
+                ev = lastEval;
+                he = true;
+                hasEval = false;
+                if (Math.abs(ev) > Engine.MATE - 300) ev = ev > 0 ? 30000 : -30000;
+              }
+              GameLog.add(this, mine, text, cap, he, ev);
             }
             void say(final String big, final String small) {
               ui.post(new Runnable() {
@@ -2625,6 +3189,7 @@ jobs:
                 String t = turnMine ? Notation.viet(cur, m) : Notation.viet(Engine.flip(cur), Engine.fm(m));
                 if (note.length() > 0) note.append("  ·  ");
                 note.append(turnMine ? "Bạn: " : "Đối thủ: ").append(t);
+                logMove(turnMine, t, capName(cur[m & 255]));
                 Track.apply(cur, m);
                 turnMine = !turnMine;
               }
@@ -2643,6 +3208,7 @@ jobs:
               boolean t = turnMine;
               int[] pend = new int[4], pendSide = new int[4];
               int npd = 0;
+              java.util.ArrayList<String[]> dl = new java.util.ArrayList<String[]>();
               StringBuilder note = new StringBuilder();
               for (int m : r) {
                 int from = m >> 8, to = m & 255;
@@ -2651,6 +3217,7 @@ jobs:
                 boolean wasHid = Math.abs(nb[from]) == 9;
                 int sg = nb[from] > 0 ? 1 : -1;
                 for (int k = 0; k < npd; k++) if (pend[k] == to) pend[k] = -1;   // quân vừa lật bị ăn ngay: không đọc được nữa
+                dl.add(new String[]{t ? "1" : "0", tx + (wasHid ? " (lật)" : ""), capName(nb[to])});
                 nb[to] = wasHid ? sg * 8 : nb[from];
                 nb[from] = 0;
                 if (wasHid) { pend[npd] = to; pendSide[npd] = sg > 0 ? 0 : 1; npd++; tx += " (lật)"; }
@@ -2673,6 +3240,7 @@ jobs:
               }
               ocrFail = 0;
               cur = nb;
+              for (String[] e : dl) logMove("1".equals(e[0]), e[1], e[2]);
               pool = np;
               turnMine = t;
               lastNote = note.toString();
@@ -2850,6 +3418,8 @@ jobs:
               }
               if (cancel) return;
               if (r == null) { say("Hết nước đi", "Ván cờ đã kết thúc?"); return; }
+              lastEval = r[1];
+              hasEval = true;
               String chk = eng.gives(B, r[0]) ? " · CHIẾU!" : "";
               String head = lastNote.isEmpty() ? "" : lastNote + "\n";
               say("Đang đi nước…", null);

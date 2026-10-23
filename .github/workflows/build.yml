@@ -2236,7 +2236,7 @@ jobs:
             static final String[] MINE_CAP = {"Nước này ăn %s của đối thủ.", "Mình thu về %s của đối thủ.", "Ăn được %s của đối thủ."};
             static final String[] OPP_CAP = {"Tiếc là đối thủ ăn mất %s của mình.", "Đối thủ ăn %s của mình.", "Mình mất %s ở nước này."};
             static final String[] EVAL = {
-              "Máy đã nhìn thấy đường chiếu bí, thế cờ gần như ngã ngũ.",
+              "Đã thấy đường chiếu bí, thế cờ gần như ngã ngũ.",
               "Thế cờ đã nghiêng hẳn về phía mình.",
               "Mình bắt đầu nhỉnh hơn một chút.",
               "Thế cờ đang khá cân bằng.",
@@ -2377,7 +2377,6 @@ jobs:
                 // vì sao đi, mặt lợi và mặt hại
                 why(out, mine, why, m[2]);
                 if (mine) {
-                  if (tok(why, "OFF") != null) out.add("Lưu ý: đây không phải nước máy gợi ý, nên mình chưa có đánh giá thế cờ cho nước này.");
                   if ("1".equals(m[3])) {
                     int c = cat(parse(m[4]));
                     if (c != lastCat) { out.add("Sau nước này, " + Character.toLowerCase(EVAL[c].charAt(0)) + EVAL[c].substring(1)); lastCat = c; }
@@ -2389,7 +2388,7 @@ jobs:
                     else if (pp.length == 2) out.add("Mình dự tính đối thủ sẽ đáp bằng " + spoken(pp[1]) + ".");
                   }
                 } else {
-                  // đánh giá nước của đối thủ: có đúng dự đoán không, và thế cờ thay đổi bao nhiêu giữa hai lần máy tính điểm
+                  // đánh giá nước của đối thủ: có đúng dự đoán không, và thế cờ thay đổi bao nhiêu giữa hai lần tính điểm
                   int pj = -1, nk = -1;
                   for (int j = i - 1; j >= 0; j--) if ("1".equals(mv.get(j)[3]) && "1".equals(mv.get(j)[0])) { pj = j; break; }
                   for (int k = i + 1; k < n; k++) if ("1".equals(mv.get(k)[3]) && "1".equals(mv.get(k)[0])) { nk = k; break; }
@@ -2401,7 +2400,7 @@ jobs:
                     int a = parse(mv.get(pj)[4]), b = parse(mv.get(nk)[4]);
                     if (Math.abs(a) < 20000 && Math.abs(b) < 20000) {
                       int d = b - a;
-                      if (d >= 100) out.add("Máy thấy nước này chưa chính xác: sau đó thế cờ nghiêng thêm về phía mình.");
+                      if (d >= 100) out.add("Nước này chưa chính xác: sau đó thế cờ nghiêng thêm về phía mình.");
                       else if (d <= -100) out.add("Đây là nước tốt của đối thủ: thế cờ bớt thuận lợi cho mình.");
                       else out.add("Nước này nằm trong dự tính, thế cờ không đổi nhiều.");
                       if (Math.abs(d) > Math.abs(swing)) { swing = d; swingAt = i + 1; }

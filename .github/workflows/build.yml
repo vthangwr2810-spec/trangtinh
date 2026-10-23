@@ -2046,7 +2046,7 @@ jobs:
           import java.util.ArrayList;
 
           // Lịch sử nước đi của ván đang chơi, lưu ra file để vẫn còn sau khi bấm Dừng.
-          // Mỗi dòng: bên(1=mình,0=đối thủ)|ký hiệu nước đi|quân bị ăn|có điểm engine(0/1)|điểm
+          // Mỗi dòng: bên(1=mình,0=đối thủ)|ký hiệu nước đi|quân bị ăn|có điểm engine(0/1)|điểm|mã lý do (Insight)|dòng dự tính
           class GameLog {
             static File logFile(Context c) { return new File(c.getFilesDir(), "gamelog.txt"); }
             static File audioFile(Context c) { return new File(c.getFilesDir(), "commentary.wav"); }
@@ -2057,10 +2057,15 @@ jobs:
               audioFile(c).delete();
             }
 
-            static synchronized void add(Context c, boolean mine, String move, String cap, boolean hasEval, int eval) {
+            static void add(Context c, boolean mine, String move, String cap, boolean hasEval, int eval) {
+              add(c, mine, move, cap, hasEval, eval, "", "");
+            }
+
+            static synchronized void add(Context c, boolean mine, String move, String cap, boolean hasEval, int eval, String why, String pv) {
               try {
                 FileOutputStream o = new FileOutputStream(logFile(c), true);
-                String line = (mine ? "1" : "0") + "|" + move.replace('|', ' ').replace('\n', ' ') + "|" + cap + "|" + (hasEval ? "1" : "0") + "|" + eval + "\n";
+                String line = (mine ? "1" : "0") + "|" + move.replace('|', ' ').replace('\n', ' ') + "|" + cap + "|" + (hasEval ? "1" : "0") + "|" + eval
+                    + "|" + why.replace('|', ' ').replace('\n', ' ') + "|" + pv.replace('|', ' ').replace('\n', ' ') + "\n";
                 o.write(line.getBytes("UTF-8"));
                 o.close();
               } catch (Throwable t) { }
@@ -2083,6 +2088,134 @@ jobs:
             }
           }
           EOF
+          cat > app/src/main/java/com/cotuong/helper/Insight.java <<'EOF'
+          package com.cotuong.helper;
+
+          // Phân tích "vì sao đi nước này" từ các sự kiện đếm được trên bàn cờ (không đoán mò).
+          // V: bàn cờ nhìn từ góc người đi (quân người đi > 0, đi lên hàng 0); m = from << 8 | to.
+          // Trả về các mã cách nhau ';' (mã tính theo người đi, Commentary tự đổi thành "mình"/"đối thủ"):
+          //   CAP:<quân>:<F|G|E|L>  ăn quân (F ăn không bị đòi, G đổi có lời, E đổi ngang, L đổi thiệt)
+          //   CHK chiếu tướng · EVC hóa giải thế bị chiếu · THR:<quân+quân> đe dọa mới · ESC:<quân> thoát khỏi đòn
+          //   SAVE:<quân> cứu quân khác · RISK:<quân> quân mình còn bị uy hiếp sau nước đi (mặt trái)
+          //   QS tốt qua sông · PD pháo vào giữa · DEV:<quân> ra quân · XC xe chiếm cột không tốt · DF củng cố cung · KG tướng đi
+          class Insight {
+            static final int NONE = -100000;
+
+            static boolean recapture(Engine e, int side, int to) {
+              int[] mv = new int[256];
+              int n = e.gen(side, mv, true);
+              for (int i = 0; i < n; i++) if ((mv[i] & 255) == to) return true;
+              return false;
+            }
+
+            // Lời/lỗ khi bên s thực hiện nước ăn cap, có tính bị ăn lại
+            static int net(Engine e, int s, int cap) {
+              int to = cap & 255, from = cap >> 8;
+              int victim = Math.abs(e.b[to]), att = Math.abs(e.b[from]);
+              if (victim == 0 || victim == 1) return 0;
+              int gain = Engine.V[victim];
+              int c = e.make(cap);
+              boolean back = recapture(e, -s, to);
+              e.unmake(cap, c);
+              return gain - (back ? Engine.V[att] : 0);
+            }
+
+            // Với mỗi ô có quân của bên đối diện s: lời tốt nhất mà s có thể thu bằng cách ăn ô đó (NONE nếu không ăn được)
+            static int[] threats(Engine e, int s) {
+              int[] r = new int[90];
+              java.util.Arrays.fill(r, NONE);
+              int[] mv = new int[256];
+              int n = e.gen(s, mv, true);
+              for (int i = 0; i < n; i++) {
+                int to = mv[i] & 255;
+                int q = Math.abs(e.b[to]);
+                if (q == 0 || q == 1) continue;
+                int v = net(e, s, mv[i]);
+                if (v > r[to]) r[to] = v;
+              }
+              return r;
+            }
+
+            static String name(int p) { return Notation.NAME[Math.abs(p)]; }
+
+            static String why(Engine e, int[] V, int m) {
+              StringBuilder sb = new StringBuilder();
+              try {
+                e.init(V);
+                int from = m >> 8, to = m & 255, p = V[from], victim = V[to];
+                if (p <= 0 || victim > 0) return "";
+                int t = p;
+                boolean evc = e.inCheck(1);
+                int[] myBefore = threats(e, 1), opBefore = threats(e, -1);
+                String cap = null;
+                if (victim < 0 && victim != -1) {
+                  int v = net(e, 1, m), gain = Engine.V[-victim];
+                  String q = v >= gain ? "F" : v >= 30 ? "G" : v > -30 ? "E" : "L";
+                  cap = "CAP:" + name(victim) + ":" + q;
+                }
+                int cc = e.make(m);
+                boolean chk = e.inCheck(-1);
+                int[] myAfter = threats(e, 1), opAfter = threats(e, -1);
+                int[] bd = e.b.clone();
+                e.unmake(m, cc);
+
+                if (evc) add(sb, "EVC");
+                if (chk) add(sb, "CHK");
+                if (cap != null) add(sb, cap);
+
+                // đe dọa mới: quân đối phương bị ta uy hiếp có lời mà trước nước đi chưa có
+                int b1 = -1, b2 = -1;
+                for (int sq = 0; sq < 90; sq++) {
+                  if (bd[sq] >= 0 || bd[sq] == -1 || bd[sq] == -7) continue;   // bỏ Tướng và Tốt: đe dọa Tốt đơn lẻ quá nhỏ để nêu
+                  if (myAfter[sq] > 0 && !(myBefore[sq] > 0)) {
+                    if (b1 < 0 || Engine.V[-bd[sq]] > Engine.V[-bd[b1]]) { b2 = b1; b1 = sq; }
+                    else if (b2 < 0 || Engine.V[-bd[sq]] > Engine.V[-bd[b2]]) b2 = sq;
+                  }
+                }
+                if (b1 >= 0) {
+                  String th = name(bd[b1]);
+                  if (b2 >= 0 && !name(bd[b2]).equals(th)) th += "+" + name(bd[b2]);
+                  add(sb, "THR:" + th);
+                }
+                // thoát khỏi đòn
+                if (opBefore[from] > 0 && !(opAfter[to] > 0)) add(sb, "ESC:" + name(p));
+                // cứu quân khác (không tính quân vừa đi)
+                int sv = -1;
+                for (int sq = 0; sq < 90; sq++) {
+                  if (sq == from || V[sq] <= 3 || V[sq] > 6) continue;
+                  if (opBefore[sq] > 0 && bd[sq] == V[sq] && !(opAfter[sq] > 0)) { if (sv < 0 || V[sq] > V[sv]) sv = sq; }
+                }
+                if (sv >= 0) add(sb, "SAVE:" + name(V[sv]));
+                // mặt trái: quân từ Mã trở lên của người đi vẫn bị uy hiếp có lời (bỏ qua khi vừa chiếu vì đối phương phải đỡ chiếu)
+                if (!chk) {
+                  int rk = -1;
+                  for (int sq = 0; sq < 90; sq++) {
+                    if (bd[sq] < 4 || bd[sq] > 6) continue;
+                    if (opAfter[sq] > 0 && (rk < 0 || bd[sq] > bd[rk])) rk = sq;
+                  }
+                  if (rk >= 0) add(sb, "RISK:" + name(bd[rk]));
+                }
+                // thế trận
+                if (t == 7 && to / 9 <= 4 && from / 9 > 4) add(sb, "QS");
+                if (t == 6 && to % 9 == 4 && from % 9 != 4 && from / 9 >= 6) add(sb, "PD");
+                if ((t == 5 || t == 4) && from / 9 == 9 && to / 9 < 9 && cap == null) add(sb, "DEV:" + name(t));
+                if (t == 5 && to % 9 != from % 9) {
+                  boolean pawn = false;
+                  for (int r = 0; r < 10; r++) if (Math.abs(V[r * 9 + to % 9]) == 7) pawn = true;
+                  if (!pawn) add(sb, "XC");
+                }
+                if (t == 2 || t == 3) add(sb, "DF");
+                if (t == 1) add(sb, "KG");
+              } catch (Throwable x) { }
+              return sb.toString();
+            }
+
+            static void add(StringBuilder sb, String s) {
+              if (sb.length() > 0) sb.append(';');
+              sb.append(s);
+            }
+          }
+          EOF
           cat > app/src/main/java/com/cotuong/helper/Commentary.java <<'EOF'
           package com.cotuong.helper;
 
@@ -2090,6 +2223,7 @@ jobs:
           import java.util.List;
 
           // Soạn lời bình tiếng Việt (giọng "mình" và "đối thủ") từ lịch sử nước đi của ván.
+          // Mỗi nước: nêu nước đi, rồi giải thích vì sao đi (ăn quân, chiếu, đe dọa, thoát đòn...), mặt lợi - mặt hại, và dự tính tiếp theo.
           class Commentary {
             static final String[] NUM = {"không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"};
 
@@ -2103,7 +2237,7 @@ jobs:
             static final String[] OPP_CAP = {"Tiếc là đối thủ ăn mất %s của mình.", "Đối thủ ăn %s của mình.", "Mình mất %s ở nước này."};
             static final String[] EVAL = {
               "Máy đã nhìn thấy đường chiếu bí, thế cờ gần như ngã ngũ.",
-              "Lúc này thế cờ đã nghiêng hẳn về phía mình.",
+              "Thế cờ đã nghiêng hẳn về phía mình.",
               "Mình bắt đầu nhỉnh hơn một chút.",
               "Thế cờ đang khá cân bằng.",
               "Mình đang hơi lép vế, cần cẩn thận.",
@@ -2147,15 +2281,90 @@ jobs:
               return 5;
             }
 
+            // Lấy phần sau "key:" của mã đầu tiên; "" nếu mã không có tham số; null nếu không có mã
+            static String tok(String why, String key) {
+              if (why == null || why.length() == 0) return null;
+              for (String t : why.split(";")) {
+                if (t.equals(key)) return "";
+                if (t.startsWith(key + ":")) return t.substring(key.length() + 1);
+              }
+              return null;
+            }
+
+            // Các câu giải thích vì sao đi nước này, và mặt hại của nó. mine = người đi là mình.
+            static void why(List<String> out, boolean mine, String why, String capName) {
+              if (why == null) why = "";
+              int before = out.size();
+              String cap = tok(why, "CAP");
+              if (tok(why, "EVC") != null)
+                out.add(mine ? "Mình đang bị chiếu nên nước này để hóa giải thế chiếu." : "Đối thủ đang bị mình chiếu nên phải hóa giải ngay.");
+              if (tok(why, "CHK") != null)
+                out.add(mine ? "Nước này chiếu tướng, ép đối thủ phải đối phó ngay thay vì làm việc khác."
+                             : "Nước này chiếu tướng mình, mình buộc phải đỡ ngay.");
+              if (cap != null) {
+                String q = cap.endsWith(":F") ? "F" : cap.endsWith(":G") ? "G" : cap.endsWith(":E") ? "E" : "L";
+                String nm = capName != null && capName.length() > 0 ? capName : "quân";
+                if (q.equals("F")) out.add(mine ? "Cái lợi là ăn " + nm + " mà đối thủ không thể ăn lại, mình lời trọn một quân."
+                                                : "Mình không có cách ăn lại, nên mất trắng " + nm + " này.");
+                else if (q.equals("G")) out.add(mine ? "Đối thủ có thể ăn lại, nhưng tính cả hai chiều mình vẫn lời trong cuộc đổi quân này."
+                                                     : "Mình có thể ăn lại, nhưng tính cả hai chiều mình vẫn chịu thiệt một chút.");
+                else if (q.equals("E")) out.add("Đây là cuộc đổi quân ngang giá, thế cờ đơn giản đi và hai bên đều bớt lực lượng tấn công.");
+                else out.add(mine ? "Mặt hại: đây là cuộc đổi mà mình thiệt về quân, chỉ đáng nếu có lợi thế về thế trận."
+                                  : "Đối thủ chịu thiệt về quân trong cuộc đổi này, đó là cơ hội cho mình.");
+              }
+              String thr = tok(why, "THR");
+              if (thr != null && thr.length() > 0) {
+                String th = thr.replace("+", " và ");
+                String lead = out.size() == before ? "Nước này" : "Đồng thời nước này";
+                out.add(mine ? lead + " đe dọa ăn " + th + " của đối thủ, buộc đối thủ phải lo giữ quân."
+                             : "Nước này đe dọa ăn " + th + " của mình, mình cần xử lý.");
+              }
+              String esc = tok(why, "ESC");
+              if (esc != null && esc.length() > 0)
+                out.add(mine ? "Nước này đưa " + esc + " thoát khỏi đòn đe dọa của đối thủ."
+                             : "Đối thủ vừa đưa " + esc + " thoát khỏi đòn đe dọa của mình.");
+              String sv = tok(why, "SAVE");
+              if (sv != null && sv.length() > 0)
+                out.add(mine ? "Cũng nhờ nước này, " + sv + " của mình không còn bị ăn."
+                             : "Nước này cũng cứu " + sv + " của đối thủ khỏi bị mình ăn.");
+              if (tok(why, "QS") != null)
+                out.add(mine ? "Tốt đã qua sông, mạnh hơn vì có thể đi ngang và gây áp lực lên cung đối thủ."
+                             : "Tốt của đối thủ qua sông, bắt đầu gây áp lực lên cung của mình.");
+              if (tok(why, "PD") != null)
+                out.add(mine ? "Pháo vào giữa, nhắm thẳng vào cung đối thủ và hỗ trợ tấn công trung lộ."
+                             : "Đối thủ đặt pháo vào giữa, tạo áp lực lên trung lộ của mình.");
+              String dev = tok(why, "DEV");
+              if (dev != null && dev.length() > 0)
+                out.add(mine ? "Mục đích là đưa " + dev + " ra khỏi vị trí ban đầu để tham gia trận đấu."
+                             : "Đối thủ đưa " + dev + " ra hoạt động, bắt đầu tham gia trận đấu.");
+              if (tok(why, "XC") != null)
+                out.add(mine ? "Xe chiếm cột không còn tốt cản nên đường đi thoáng, dễ tạo đe dọa về sau."
+                             : "Xe đối thủ chiếm cột thoáng, mình cần để ý các đường xe.");
+              if (tok(why, "DF") != null)
+                out.add(mine ? "Nước này củng cố cung phòng thủ, giảm nguy cơ bị chiếu, nhưng không tạo thêm sức tấn công."
+                             : "Đối thủ củng cố cung của họ, nên tạm thời khó tấn công trực tiếp.");
+              if (tok(why, "KG") != null)
+                out.add(mine ? "Tướng di chuyển nhẹ để tránh áp lực, nhưng cũng làm cung bớt chắc." : "Tướng đối thủ đổi vị trí để tránh áp lực.");
+              if (out.size() == before)
+                out.add(mine ? "Đây là nước yên lặng: không ăn quân hay đe dọa trực tiếp, chủ yếu cải thiện thế trận và chuẩn bị cho bước sau."
+                             : "Đối thủ đi một nước yên lặng, chưa tạo ra đe dọa trực tiếp nào.");
+              String rk = tok(why, "RISK");
+              if (rk != null && rk.length() > 0)
+                out.add(mine ? "Mặt hại cần chú ý: sau nước này " + rk + " của mình đang bị uy hiếp, phải để ý bảo vệ."
+                             : "Điểm yếu của đối thủ: " + rk + " của họ đang bị mình uy hiếp, mình có thể khai thác.");
+            }
+
             static List<String> script(List<String[]> mv) {
               ArrayList<String> out = new ArrayList<String>();
               int n = mv.size();
               out.add("Chào mọi người. Đây là lời bình ván cờ tướng vừa rồi, gồm " + n + " nước đi.");
-              int mi = 0, oi = 0, cm = 0, co = 0, lastCat = -1;
+              int mi = 0, oi = 0, cm = 0, co = 0, lastCat = -1, swingAt = -1, swing = 0;
               for (int i = 0; i < n; i++) {
                 String[] m = mv.get(i);
                 boolean mine = "1".equals(m[0]);
                 String mvTxt = spoken(m[1]);
+                String why = m.length > 5 ? m[5] : "";
+                String pv = m.length > 6 ? m[6] : "";
                 String s;
                 if (i == 0) s = (mine ? "Mình" : "Đối thủ") + " mở đầu bằng " + mvTxt + ".";
                 else if (mine) s = MINE_MOVE[mi++ % MINE_MOVE.length].replace("%s", mvTxt);
@@ -2165,13 +2374,47 @@ jobs:
                   if (mine) { out.add(MINE_CAP[cm % MINE_CAP.length].replace("%s", m[2])); cm++; }
                   else { out.add(OPP_CAP[co % OPP_CAP.length].replace("%s", m[2])); co++; }
                 }
-                if (mine && "1".equals(m[3])) {
-                  int c = cat(parse(m[4]));
-                  if (c != lastCat) { out.add(EVAL[c]); lastCat = c; }
+                // vì sao đi, mặt lợi và mặt hại
+                why(out, mine, why, m[2]);
+                if (mine) {
+                  if (tok(why, "OFF") != null) out.add("Lưu ý: đây không phải nước máy gợi ý, nên mình chưa có đánh giá thế cờ cho nước này.");
+                  if ("1".equals(m[3])) {
+                    int c = cat(parse(m[4]));
+                    if (c != lastCat) { out.add("Sau nước này, " + Character.toLowerCase(EVAL[c].charAt(0)) + EVAL[c].substring(1)); lastCat = c; }
+                  }
+                  // dự tính: nước đối thủ có thể đáp và nước mình đi tiếp theo
+                  if (pv.length() > 0) {
+                    String[] pp = pv.split(" → ");
+                    if (pp.length >= 3) out.add("Mình dự tính: nếu đối thủ đáp bằng " + spoken(pp[1]) + ", mình sẽ tiếp tục với " + spoken(pp[2]) + ".");
+                    else if (pp.length == 2) out.add("Mình dự tính đối thủ sẽ đáp bằng " + spoken(pp[1]) + ".");
+                  }
+                } else {
+                  // đánh giá nước của đối thủ: có đúng dự đoán không, và thế cờ thay đổi bao nhiêu giữa hai lần máy tính điểm
+                  int pj = -1, nk = -1;
+                  for (int j = i - 1; j >= 0; j--) if ("1".equals(mv.get(j)[3]) && "1".equals(mv.get(j)[0])) { pj = j; break; }
+                  for (int k = i + 1; k < n; k++) if ("1".equals(mv.get(k)[3]) && "1".equals(mv.get(k)[0])) { nk = k; break; }
+                  if (pj >= 0 && mv.get(pj).length > 6) {
+                    String[] pp = mv.get(pj)[6].split(" → ");
+                    if (pp.length >= 2 && pp[1].equals(m[1])) out.add("Đúng như mình dự đoán.");
+                  }
+                  if (pj >= 0 && nk >= 0) {
+                    int a = parse(mv.get(pj)[4]), b = parse(mv.get(nk)[4]);
+                    if (Math.abs(a) < 20000 && Math.abs(b) < 20000) {
+                      int d = b - a;
+                      if (d >= 100) out.add("Máy thấy nước này chưa chính xác: sau đó thế cờ nghiêng thêm về phía mình.");
+                      else if (d <= -100) out.add("Đây là nước tốt của đối thủ: thế cờ bớt thuận lợi cho mình.");
+                      else out.add("Nước này nằm trong dự tính, thế cờ không đổi nhiều.");
+                      if (Math.abs(d) > Math.abs(swing)) { swing = d; swingAt = i + 1; }
+                    }
+                  }
                 }
               }
               if (cm == 0 && co == 0) out.add("Tổng kết ván cờ. Hai bên chưa ăn quân nào.");
               else out.add("Tổng kết ván cờ. Mình ăn được " + cm + " quân của đối thủ, còn đối thủ ăn của mình " + co + " quân.");
+              if (swingAt > 0 && Math.abs(swing) >= 150) {
+                if (swing > 0) out.add("Bước ngoặt của ván cờ là nước thứ " + swingAt + ": đối thủ đi chưa chính xác và mình được lợi thế.");
+                else out.add("Bước ngoặt của ván cờ là nước thứ " + swingAt + ": đối thủ đi một nước rất tốt và mình gặp khó.");
+              }
               if (lastCat >= 0) out.add(FINAL[lastCat]);
               out.add("Cảm ơn mọi người đã xem. Hẹn gặp lại ở ván sau.");
               return out;
@@ -2788,6 +3031,7 @@ jobs:
             int stableN = 0, miss = 0, shotFail = 0;
             int lastEval = 0;
             boolean hasEval = false;
+            String lastLine = "";   // biến chính dự kiến của lần gợi ý gần nhất (ký hiệu tiếng Việt, ngăn bằng ' → ')
             String lastNote = "";
             final float[] g = new float[4];   // x0, y0, bước ngang, bước dọc
             SharedPreferences sp;
@@ -3090,16 +3334,22 @@ jobs:
               return "quân úp";
             }
 
-            void logMove(boolean mine, String text, String cap) {
+            void logMove(boolean mine, String text, String cap) { logMove(mine, text, cap, ""); }
+
+            void logMove(boolean mine, String text, String cap, String why) {
               int ev = 0;
               boolean he = false;
+              String pv = "";
+              if (why == null) why = "";
               if (mine && hasEval) {
                 ev = lastEval;
                 he = true;
                 hasEval = false;
                 if (Math.abs(ev) > Engine.MATE - 300) ev = ev > 0 ? 30000 : -30000;
+                if (lastLine.equals(text) || lastLine.startsWith(text + " → ")) pv = lastLine;
+                else { he = false; why = (why.length() > 0 ? why + ";" : "") + "OFF"; }   // bạn đi khác nước máy gợi ý: điểm không áp cho nước này
               }
-              GameLog.add(this, mine, text, cap, he, ev);
+              GameLog.add(this, mine, text, cap, he, ev, why, pv);
             }
             void say(final String big, final String small) {
               ui.post(new Runnable() {
@@ -3189,7 +3439,9 @@ jobs:
                 String t = turnMine ? Notation.viet(cur, m) : Notation.viet(Engine.flip(cur), Engine.fm(m));
                 if (note.length() > 0) note.append("  ·  ");
                 note.append(turnMine ? "Bạn: " : "Đối thủ: ").append(t);
-                logMove(turnMine, t, capName(cur[m & 255]));
+                String why = "";
+                try { why = Insight.why(eng, turnMine ? cur : Engine.flip(cur), turnMine ? m : Engine.fm(m)); } catch (Throwable x) { }
+                logMove(turnMine, t, capName(cur[m & 255]), why);
                 Track.apply(cur, m);
                 turnMine = !turnMine;
               }
@@ -3420,6 +3672,7 @@ jobs:
               if (r == null) { say("Hết nước đi", "Ván cờ đã kết thúc?"); return; }
               lastEval = r[1];
               hasEval = true;
+              try { lastLine = eng.line(B, 4); } catch (Throwable x) { lastLine = ""; }
               String chk = eng.gives(B, r[0]) ? " · CHIẾU!" : "";
               String head = lastNote.isEmpty() ? "" : lastNote + "\n";
               say("Đang đi nước…", null);

@@ -2235,7 +2235,7 @@ jobs:
           // Tùy chọn (MainActivity đặt trước khi soạn): level = độ dài, tone = giọng điệu, risk = có nói phần mặt hại không.
           //   level 0 Ngắn: nước đi, quân bị ăn, chiếu tướng, đổi thế cờ, tổng kết gọn
           //   level 1 Vừa : thêm 1 lý do chính + 1 mặt hại (nếu bật), nhận định thế cờ, tổng kết đầy đủ
-          //   level 2 Sâu : đủ lý do, mặt lợi - mặt hại, dự tính, đánh giá nước của đối thủ
+          //   level 2 Sâu : đủ lý do, mặt lợi - mặt hại, chỉ ra sai lầm của đối thủ kèm nước hợp lý hơn, phân tích kỹ các nước then chốt
           // Kết quả là danh sách đoạn văn (mỗi đoạn ~ một cặp nước đi), người dùng có thể sửa tay trước khi tạo âm thanh.
           class Commentary {
             static final String[] NUM = {"không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"};
@@ -2300,165 +2300,285 @@ jobs:
             static final String[][] INTRO = {
               {"Chào mọi người. Sau đây là phần bình luận ván cờ tướng vừa rồi, gồm %n nước đi.",
                "Xin chào mọi người. Chúng ta cùng nhìn lại ván cờ tướng vừa diễn ra, với tổng cộng %n nước đi.",
-               "Chào mọi người, hôm nay mình xin bình lại ván cờ tướng vừa chơi, gồm %n nước đi."},
+               "Chào mọi người, hôm nay mình xin bình lại ván cờ tướng vừa chơi, gồm %n nước đi.",
+               "Xin chào các bạn, mời mọi người cùng theo dõi phần phân tích ván cờ tướng vừa rồi, kéo dài %n nước đi.",
+               "Chào cả nhà, ván cờ tướng hôm nay có %n nước đi, mình xin cùng mọi người điểm lại từng diễn biến chính.",
+               "Xin chào, đây là phần nhìn lại ván cờ tướng với %n nước đi, mình sẽ đi từ khai cuộc đến những nước cuối cùng."},
               {"Xin chào cả nhà! Cùng xem lại ván cờ tướng vừa rồi, tổng cộng %n nước đi nhé.",
                "Chào cả nhà, ván cờ tướng hôm nay có %n nước đi, vào xem thôi.",
-               "A lô a lô, ván cờ có %n nước đi đã sẵn sàng, cả nhà ngồi cho vững nhé."}
+               "A lô a lô, ván cờ có %n nước đi đã sẵn sàng, cả nhà ngồi cho vững nhé.",
+               "Chào cả nhà, ván cờ %n nước đi vừa rồi có nhiều chuyện vui, mình bắt đầu thôi.",
+               "Cả nhà ơi, mình mang đến ván cờ %n nước đi, ngồi xuống và thưởng thức nhé."}
             };
 
             static final String[][] OUTRO = {
               {"Cảm ơn mọi người đã theo dõi. Hẹn gặp lại ở ván cờ tiếp theo.",
                "Đến đây là hết ván cờ. Cảm ơn mọi người đã xem, hẹn gặp lại.",
-               "Cảm ơn mọi người đã đồng hành cùng ván cờ này. Hẹn gặp lại ở những ván sau."},
+               "Cảm ơn mọi người đã đồng hành cùng ván cờ này. Hẹn gặp lại ở những ván sau.",
+               "Đến đây là kết thúc phần bình luận. Cảm ơn mọi người đã theo dõi và hẹn gặp lại.",
+               "Mình xin dừng ở đây. Cảm ơn mọi người đã xem, hẹn gặp lại ở ván cờ sau.",
+               "Hy vọng phần bình luận hữu ích với mọi người. Cảm ơn đã xem và hẹn gặp lại."},
               {"Cảm ơn cả nhà đã xem. Nhớ theo dõi để xem ván sau mình thắng đẹp cỡ nào nhé!",
                "Hết ván rồi, cảm ơn cả nhà. Hẹn gặp lại ở ván sau, đừng quên theo dõi nhé.",
-               "Xong ván rồi, cảm ơn cả nhà. Nhớ ghé lại, ván sau còn hay hơn nữa."}
+               "Xong ván rồi, cảm ơn cả nhà. Nhớ ghé lại, ván sau còn hay hơn nữa.",
+               "Hết ván rồi, cảm ơn cả nhà đã xem, nhớ chia sẻ nếu thấy hay nhé.",
+               "Vậy là xong, cảm ơn cả nhà. Hẹn gặp lại ở ván sau, mình hứa sẽ hay hơn."}
             };
 
-            static final String[] MINE_OPEN = {"Mình mở đầu ván cờ bằng %s.", "Mình khai cuộc với %s.", "Nước đi đầu tiên của mình là %s."};
-            static final String[] OPP_OPEN = {"Đối thủ mở đầu ván cờ bằng %s.", "Đối thủ khai cuộc với %s.", "Nước đi đầu tiên của đối thủ là %s."};
+            static final String[] MINE_OPEN = {"Mình mở đầu ván cờ bằng %s.", "Mình khai cuộc với %s.", "Nước đi đầu tiên của mình là %s.",
+              "Mình bắt đầu ván cờ với %s.",
+              "Mình xuất quân bằng %s."};
+            static final String[] OPP_OPEN = {"Đối thủ mở đầu ván cờ bằng %s.", "Đối thủ khai cuộc với %s.", "Nước đi đầu tiên của đối thủ là %s.",
+              "Đối thủ bắt đầu ván cờ với %s.",
+              "Đối thủ xuất quân bằng %s."};
             static final String[] MINE_OPEN_H = {"Mình xin mạn phép khai cuộc với %s."};
             static final String[] OPP_OPEN_H = {"Đối thủ khai cuộc bằng %s, ván cờ bắt đầu rồi đây."};
 
             static final String[] MINE_MOVE = {
               "Mình đi %s.", "Tiếp theo, mình chọn %s.", "Mình tiếp tục với %s.", "Bên mình đáp lại bằng %s.",
               "Mình quyết định đi %s.", "Mình triển khai tiếp với nước %s.", "Lượt đi của mình là %s.",
-              "Mình chọn %s ở nước này.", "Đến lượt mình, nước đi là %s.", "Mình phản ứng bằng %s."};
+              "Mình chọn %s ở nước này.", "Đến lượt mình, nước đi là %s.", "Mình phản ứng bằng %s.",
+              "Nước tiếp theo của mình là %s.",
+              "Mình chọn phương án %s.",
+              "Mình đáp bằng nước %s.",
+              "Về phần mình, nước đi lúc này là %s.",
+              "Mình quyết định triển khai %s.",
+              "Ở lượt này, mình đi %s.",
+              "Bên mình tiếp tục bằng %s.",
+              "Mình đưa ra lựa chọn %s.",
+              "Nước đi của mình ở đây là %s.",
+              "%p của mình tiến hành nước %s.",
+              "Mình cho %p vào cuộc với nước %s.",
+              "Đến lượt %p của mình, nước đi là %s.",
+              "Mình điều %p thực hiện %s."};
             static final String[] MINE_MOVE_H = {
-              "Mình tung chiêu %s.", "Mình thử %s xem sao.", "Hít sâu một hơi, mình đi %s.", "Mình bày thêm một nước %s."};
+              "Mình tung chiêu %s.", "Mình thử %s xem sao.", "Hít sâu một hơi, mình đi %s.", "Mình bày thêm một nước %s.",
+              "Mình ra tay với %s, nhẹ nhàng thôi.",
+              "Đến lượt mình, mình đi %s cho đối thủ đau đầu."};
             static final String[] OPP_MOVE = {
               "Đối thủ đáp lại bằng %s.", "Đối thủ đi %s.", "Phía đối thủ chọn %s.", "Đối thủ phản ứng bằng %s.",
               "Đối thủ tiếp tục với %s.", "Đối thủ đưa ra nước %s.", "Bên kia trả lời bằng %s.",
-              "Nước đáp trả của đối thủ là %s.", "Đối thủ lựa chọn %s.", "Lượt tiếp theo, đối thủ đi %s."};
+              "Nước đáp trả của đối thủ là %s.", "Đối thủ lựa chọn %s.", "Lượt tiếp theo, đối thủ đi %s.",
+              "Đối thủ chọn phương án %s.",
+              "Đối thủ thực hiện %s.",
+              "Ngay sau đó, đối thủ đi %s.",
+              "Phía bên kia đáp bằng nước %s.",
+              "Nước đi tiếp theo của đối thủ là %s.",
+              "Đối thủ quyết định đi %s.",
+              "Về phía đối thủ, nước đi là %s.",
+              "Đối thủ đưa ra lựa chọn %s.",
+              "Bên đối thủ tiếp tục với %s.",
+              "%p của đối thủ tiến hành nước %s.",
+              "Đối thủ cho %p vào cuộc với nước %s.",
+              "Đối thủ điều %p thực hiện %s."};
             static final String[] OPP_MOVE_H = {
               "Đối thủ lại ra chiêu %s.", "Đối thủ đi %s, không biết tính gì đây.", "Đối thủ bất ngờ đi %s.",
-              "Bên kia đáp lễ bằng %s."};
+              "Bên kia đáp lễ bằng %s.",
+              "Đối thủ nghĩ mãi rồi cũng đi %s.",
+              "Đối thủ vừa đi %s, nghe có vẻ nguy hiểm.",
+              "Đối thủ chơi %s, mình ghi nhận."};
 
             // Câu ăn quân. Có thêm nhận xét về lời/lỗ khi bản lời bình đủ dài (mã F: ăn không bị ăn lại, G: ăn lại được nhưng vẫn lời,
             // E: đổi ngang giá, L: đổi bị thiệt)
             static final String[] MC_SIMPLE = {
-              "Nước này ăn %s của đối thủ.", "Mình thu về %s của đối thủ.", "Mình lấy được %s của đối thủ.", "Mình bắt gọn %s của đối thủ."};
+              "Nước này ăn %s của đối thủ.", "Mình thu về %s của đối thủ.", "Mình lấy được %s của đối thủ.", "Mình bắt gọn %s của đối thủ.",
+              "Mình ăn %s của đối thủ.",
+              "Mình hạ %s của đối thủ.",
+              "Mình bắt được %s của đối thủ.",
+              "%s của đối thủ đã rơi vào tay mình.",
+              "Mình chiếm được %s của đối thủ."};
             static final String[] MC_SIMPLE_H = {
               "Xin lỗi nhé, mình mượn %s của đối thủ.", "Ăn gọn %s, cảm ơn đã gửi quân.", "Mình bỏ túi %s của đối thủ."};
             static final String[] MC_F = {
               "Mình ăn %s của đối thủ, quân này không bị ăn lại nên mình lời trọn một quân.",
               "Nước đi thu về %s của đối thủ mà không phải trả giá, mình hơn hẳn một quân.",
               "Mình lấy được %s của đối thủ, đối thủ không có đường đòi lại, một quân lời trọn.",
-              "Mình ăn %s của đối thủ một cách gọn gàng, đối thủ không thể ăn lại."};
+              "Mình ăn %s của đối thủ một cách gọn gàng, đối thủ không thể ăn lại.",
+              "Mình ăn %s của đối thủ mà không phải đổi gì, một quân lời rõ ràng.",
+              "%s của đối thủ bị mình thu về, và họ không có cách nào ăn lại.",
+              "Cú ăn %s này hoàn toàn miễn phí, mình dẫn trước một quân.",
+              "Mình lấy %s của đối thủ và giữ được lợi thế quân một cách sạch sẽ."};
             static final String[] MC_G = {
               "Mình ăn %s của đối thủ. Dù đối thủ có thể ăn lại, tính cả hai chiều mình vẫn có lợi.",
-              "Mình thu về %s của đối thủ, bị ăn lại cũng không sao vì tính ra mình vẫn lời trong cuộc đổi này."};
+              "Mình thu về %s của đối thủ, bị ăn lại cũng không sao vì tính ra mình vẫn lời trong cuộc đổi này.",
+              "Mình ăn %s của đối thủ, dù bị ăn lại thì tổng thể mình vẫn có lợi.",
+              "Việc ăn %s mở ra một cuộc đổi quân, nhưng cán cân vẫn nghiêng về mình."};
             static final String[] MC_E = {
               "Mình ăn %s của đối thủ, hai bên đổi quân ngang giá và thế cờ đơn giản đi.",
-              "Mình lấy %s của đối thủ trong một cuộc đổi quân ngang giá, lực tấn công của cả hai bên đều giảm bớt."};
+              "Mình lấy %s của đối thủ trong một cuộc đổi quân ngang giá, lực tấn công của cả hai bên đều giảm bớt.",
+              "Mình đổi %s của đối thủ lấy quân tương đương, thế cờ đơn giản đi nhiều.",
+              "Mình ăn %s trong một cuộc đổi quân cân bằng, hai bên cùng bớt lực lượng."};
             static final String[] MC_L = {
               "Mình ăn %s của đối thủ, nhưng cuộc đổi này mình thiệt về quân, chỉ đáng nếu thế trận bù lại được.",
-              "Mình lấy %s của đối thủ, tuy nhiên tính cả cuộc đổi thì mình hơi thiệt."};
+              "Mình lấy %s của đối thủ, tuy nhiên tính cả cuộc đổi thì mình hơi thiệt.",
+              "Mình ăn %s của đối thủ nhưng cuộc đổi này chưa thật sự có lợi, mình sẽ phải bù lại bằng thế trận."};
 
             static final String[] OC_SIMPLE = {
-              "Tiếc là đối thủ ăn mất %s của mình.", "Đối thủ ăn %s của mình.", "Mình mất %s ở nước này.", "Đối thủ lấy đi %s của mình."};
+              "Tiếc là đối thủ ăn mất %s của mình.", "Đối thủ ăn %s của mình.", "Mình mất %s ở nước này.", "Đối thủ lấy đi %s của mình.",
+              "Đối thủ hạ %s của mình.",
+              "%s của mình bị đối thủ bắt mất.",
+              "Mình để mất %s ở nước đi này.",
+              "Đối thủ chiếm được %s của mình."};
             static final String[] OC_SIMPLE_H = {
               "Ôi, %s của mình đã ra đi.", "Tạm biệt %s thân yêu.", "%s của mình bị bắt cóc rồi."};
             static final String[] OC_F = {
               "Đối thủ ăn %s của mình, mình không có cách ăn lại nên mất trắng một quân.",
               "Mình mất %s ở nước này và không thể đòi lại, đây là tổn thất thật sự.",
-              "Đối thủ lấy đi %s của mình mà không bị ăn lại, mình đang thiệt một quân."};
+              "Đối thủ lấy đi %s của mình mà không bị ăn lại, mình đang thiệt một quân.",
+              "Đối thủ thu về %s của mình, mình không thể đòi lại, tổn thất này khá nặng.",
+              "Mình mất %s mà không có đền bù, ván cờ trở nên khó hơn.",
+              "%s của mình bị ăn và không có cách thu hồi, mình đang kém một quân."};
             static final String[] OC_G = {
               "Đối thủ ăn %s của mình. Mình ăn lại được, nhưng tính cả hai chiều vẫn thiệt một chút.",
-              "Mình mất %s, có thể ăn lại nhưng cuộc đổi này vẫn nghiêng về phía đối thủ."};
+              "Mình mất %s, có thể ăn lại nhưng cuộc đổi này vẫn nghiêng về phía đối thủ.",
+              "Đối thủ ăn %s của mình, mình ăn lại được nhưng tổng thể vẫn chịu thiệt một chút."};
             static final String[] OC_E = {
               "Đối thủ ăn %s của mình, hai bên đổi quân ngang giá.",
-              "Mình mất %s trong một cuộc đổi quân ngang giá, thế cờ nhẹ đi."};
+              "Mình mất %s trong một cuộc đổi quân ngang giá, thế cờ nhẹ đi.",
+              "Đối thủ ăn %s của mình, mình đổi lại quân tương đương nên lực lượng hai bên vẫn cân bằng.",
+              "Cuộc đổi %s này khá cân bằng, không bên nào được lợi rõ rệt."};
             static final String[] OC_L = {
               "Đối thủ ăn %s của mình, nhưng cuộc đổi này họ chịu thiệt về quân, đó là cơ hội cho mình.",
-              "Mình mất %s, tuy vậy đối thủ trả giá khá đắt trong cuộc đổi này."};
+              "Mình mất %s, tuy vậy đối thủ trả giá khá đắt trong cuộc đổi này.",
+              "Đối thủ ăn %s của mình, nhưng họ phải trả giá đắt hơn thế."};
 
             // EVAL[tone][loại thế cờ]: 0 sắp chiếu bí đối thủ, 1 hơn nhiều, 2 hơn nhẹ, 3 cân bằng, 4 kém nhẹ, 5 kém nhiều, 6 sắp bị chiếu bí
             static final String[][][] EVAL = {
               {
-                {"Đã thấy đường chiếu bí, thế cờ gần như ngã ngũ.", "Mình đã nhìn thấy đường chiếu bí, ván cờ sắp kết thúc."},
-                {"Thế cờ đã nghiêng hẳn về phía mình.", "Mình đang chiếm ưu thế rõ rệt."},
-                {"Mình bắt đầu nhỉnh hơn một chút.", "Mình đang có chút lợi thế nhỏ."},
-                {"Thế cờ đang khá cân bằng.", "Hai bên đang ngang ngửa nhau."},
-                {"Mình đang hơi lép vế, cần cẩn thận.", "Thế cờ hơi bất lợi cho mình, phải đi chắc."},
-                {"Thế cờ đang khó khăn cho mình.", "Mình đang gặp thế khó, cần tìm cơ hội phản công."},
-                {"Nguy rồi, đối thủ đã có đường chiếu bí.", "Rất nguy hiểm, mình đang bị đe dọa chiếu bí."}
+                {"Đã thấy đường chiếu bí, thế cờ gần như ngã ngũ.", "Mình đã nhìn thấy đường chiếu bí, ván cờ sắp kết thúc.", "Mình đã tính ra đường chiếu bí, chỉ cần đi chính xác là xong.", "Đối thủ gần như hết đường chống đỡ."},
+                {"Thế cờ đã nghiêng hẳn về phía mình.", "Mình đang chiếm ưu thế rõ rệt.", "Mình đang nắm quyền kiểm soát ván cờ.", "Lợi thế của mình lúc này khá lớn và ổn định."},
+                {"Mình bắt đầu nhỉnh hơn một chút.", "Mình đang có chút lợi thế nhỏ.", "Mình nhỉnh hơn một chút nhưng ván cờ vẫn còn dài.", "Cán cân hơi nghiêng về phía mình."},
+                {"Thế cờ đang khá cân bằng.", "Hai bên đang ngang ngửa nhau.", "Hai bên đang giằng co, chưa ai chiếm ưu thế rõ rệt.", "Thế cờ cân bằng, ai sai sót trước sẽ chịu thiệt."},
+                {"Mình đang hơi lép vế, cần cẩn thận.", "Thế cờ hơi bất lợi cho mình, phải đi chắc.", "Mình hơi kém một chút, cần phòng thủ chính xác.", "Cán cân đang nghiêng nhẹ về phía đối thủ."},
+                {"Thế cờ đang khó khăn cho mình.", "Mình đang gặp thế khó, cần tìm cơ hội phản công.", "Mình đang gặp nhiều khó khăn, phải tìm cách gỡ gạc.", "Thế cờ bất lợi rõ rệt cho mình."},
+                {"Nguy rồi, đối thủ đã có đường chiếu bí.", "Rất nguy hiểm, mình đang bị đe dọa chiếu bí.", "Tình hình rất nguy cấp, Tướng của mình đang bị đe dọa nghiêm trọng.", "Mình đang đứng trước nguy cơ bị chiếu bí."}
               },
               {
-                {"Chiếu bí đang ở ngay trước mắt, đối thủ chuẩn bị thu dọn bàn cờ.", "Mình thấy đường chiếu bí rồi, chỉ cần đi cho đúng."},
-                {"Thế cờ đang rất ngon cho mình.", "Mình đang ăn đứt, đối thủ nên lo đi là vừa."},
-                {"Mình đang nhỉnh hơn một chút, đủ để mỉm cười.", "Hơi hơn một tí thôi nhưng cũng vui rồi."},
-                {"Thế cờ cân bằng, ai sai trước người đó chịu.", "Cân tài cân sức, hồi hộp quá."},
-                {"Mình đang hơi lép vế, phải giữ bình tĩnh nào.", "Hơi khó một chút, nhưng chưa phải hết cờ."},
-                {"Thế này khó thật, mình cần một phép màu.", "Mình đang gặp khó, nhưng cờ tướng còn nhiều bất ngờ."},
-                {"Nguy to rồi, mình sắp bị chiếu bí!", "Đối thủ có đường chiếu bí, tim mình đập thình thịch."}
+                {"Chiếu bí đang ở ngay trước mắt, đối thủ chuẩn bị thu dọn bàn cờ.", "Mình thấy đường chiếu bí rồi, chỉ cần đi cho đúng.", "Đường chiếu bí đã hiện ra, chỉ còn thiếu một cú chốt hạ."},
+                {"Thế cờ đang rất ngon cho mình.", "Mình đang ăn đứt, đối thủ nên lo đi là vừa.", "Mình đang chơi như ở nhà, đối thủ nên cẩn thận."},
+                {"Mình đang nhỉnh hơn một chút, đủ để mỉm cười.", "Hơi hơn một tí thôi nhưng cũng vui rồi.", "Mình hơn một chút, đủ để tự tin hơn."},
+                {"Thế cờ cân bằng, ai sai trước người đó chịu.", "Cân tài cân sức, hồi hộp quá.", "Hai bên đang ngang tài ngang sức, chưa ai chịu nhường ai."},
+                {"Mình đang hơi lép vế, phải giữ bình tĩnh nào.", "Hơi khó một chút, nhưng chưa phải hết cờ.", "Mình hơi thiệt thòi, nhưng vẫn còn nhiều cách để gỡ."},
+                {"Thế này khó thật, mình cần một phép màu.", "Mình đang gặp khó, nhưng cờ tướng còn nhiều bất ngờ.", "Thế này hơi khó, nhưng cờ tướng thì chưa hết cờ là chưa biết."},
+                {"Nguy to rồi, mình sắp bị chiếu bí!", "Đối thủ có đường chiếu bí, tim mình đập thình thịch.", "Nguy cấp rồi, mình phải tìm đường thoát ngay."}
               }
             };
-            static final String[] EVAL_LEAD = {"Sau nước này, ", "Đến đây, ", "Nhìn tổng thể, ", "Ở thời điểm này, ", "Lúc này, "};
+            static final String[] EVAL_LEAD = {"Sau nước này, ", "Đến đây, ", "Nhìn tổng thể, ", "Ở thời điểm này, ", "Lúc này, ",
+              "Nhìn lại bàn cờ lúc này, ",
+              "Xét tương quan lực lượng, ",
+              "Sau diễn biến vừa rồi, "};
 
             static final String[][][] FINAL = {
               {
-                {"Ở những nước cuối, mình đã nắm chắc thế thắng.", "Khi ván cờ khép lại, mình nắm chắc thế thắng."},
-                {"Ở những nước cuối, thế cờ nghiêng hẳn về phía mình.", "Về cuối ván, mình chiếm ưu thế rõ rệt."},
-                {"Ở những nước cuối, mình nhỉnh hơn một chút.", "Về cuối ván, mình hơn nhẹ."},
-                {"Ở những nước cuối, thế cờ vẫn khá cân bằng.", "Về cuối ván, hai bên vẫn ngang ngửa."},
-                {"Ở những nước cuối, mình hơi lép vế.", "Về cuối ván, mình kém nhẹ."},
-                {"Ở những nước cuối, thế cờ không còn thuận lợi cho mình.", "Về cuối ván, mình gặp nhiều khó khăn."},
-                {"Ở những nước cuối, đối thủ đã nắm thế chiếu bí.", "Về cuối ván, đối thủ đã có đường chiếu bí."}
+                {"Ở những nước cuối, mình đã nắm chắc thế thắng.", "Khi ván cờ khép lại, mình nắm chắc thế thắng.", "Chung cuộc, mình giành chiến thắng thuyết phục."},
+                {"Ở những nước cuối, thế cờ nghiêng hẳn về phía mình.", "Về cuối ván, mình chiếm ưu thế rõ rệt.", "Chung cuộc, mình giữ vững ưu thế đến cuối ván."},
+                {"Ở những nước cuối, mình nhỉnh hơn một chút.", "Về cuối ván, mình hơn nhẹ.", "Chung cuộc, mình giữ được lợi thế nhỏ đến cùng."},
+                {"Ở những nước cuối, thế cờ vẫn khá cân bằng.", "Về cuối ván, hai bên vẫn ngang ngửa.", "Chung cuộc, hai bên chia nhau thế cờ cân bằng."},
+                {"Ở những nước cuối, mình hơi lép vế.", "Về cuối ván, mình kém nhẹ.", "Chung cuộc, mình rơi vào thế hơi kém."},
+                {"Ở những nước cuối, thế cờ không còn thuận lợi cho mình.", "Về cuối ván, mình gặp nhiều khó khăn.", "Chung cuộc, mình gặp nhiều khó khăn khó gỡ."},
+                {"Ở những nước cuối, đối thủ đã nắm thế chiếu bí.", "Về cuối ván, đối thủ đã có đường chiếu bí.", "Chung cuộc, mình bị đối thủ ép vào thế chiếu bí."}
               },
               {
-                {"Cuối ván, mình đã nắm chắc phần thắng, ăn mừng thôi.", "Kết thúc ván, thắng lợi gần như trong tay mình."},
-                {"Cuối ván, thế cờ nghiêng hẳn về mình, quá đẹp.", "Về cuối ván mình hơn hẳn, đối thủ nên rút kinh nghiệm."},
-                {"Cuối ván, mình hơn một chút, vui là chính.", "Về cuối ván, mình nhỉnh hơn một tí."},
-                {"Cuối ván, hai bên vẫn ngang ngửa, đúng là cân não.", "Về cuối ván vẫn cân bằng, hồi hộp tới phút chót."},
-                {"Cuối ván, mình hơi lép vế, lần sau gỡ lại.", "Về cuối ván mình kém nhẹ, nhưng không sao."},
-                {"Cuối ván, thế cờ khó cho mình, thôi rút kinh nghiệm.", "Về cuối ván mình gặp khó, ván sau sẽ khác."},
-                {"Cuối ván, đối thủ có đường chiếu bí, mình xin nhận thua.", "Về cuối ván đối thủ chiếu bí được, mình xin chịu."}
+                {"Cuối ván, mình đã nắm chắc phần thắng, ăn mừng thôi.", "Kết thúc ván, thắng lợi gần như trong tay mình.", "Chung cuộc, mình thắng đẹp, ăn mừng nào."},
+                {"Cuối ván, thế cờ nghiêng hẳn về mình, quá đẹp.", "Về cuối ván mình hơn hẳn, đối thủ nên rút kinh nghiệm.", "Chung cuộc, mình hơn hẳn, đúng là một ván đáng nhớ."},
+                {"Cuối ván, mình hơn một chút, vui là chính.", "Về cuối ván, mình nhỉnh hơn một tí.", "Chung cuộc, mình hơn nhẹ nhưng cũng đủ vui."},
+                {"Cuối ván, hai bên vẫn ngang ngửa, đúng là cân não.", "Về cuối ván vẫn cân bằng, hồi hộp tới phút chót.", "Chung cuộc, hai bên hòa đúng nghĩa cân tài cân sức."},
+                {"Cuối ván, mình hơi lép vế, lần sau gỡ lại.", "Về cuối ván mình kém nhẹ, nhưng không sao.", "Chung cuộc, mình kém một chút, hẹn lần sau gỡ lại."},
+                {"Cuối ván, thế cờ khó cho mình, thôi rút kinh nghiệm.", "Về cuối ván mình gặp khó, ván sau sẽ khác.", "Chung cuộc, mình thua thiệt, nhưng đã học được nhiều điều."},
+                {"Cuối ván, đối thủ có đường chiếu bí, mình xin nhận thua.", "Về cuối ván đối thủ chiếu bí được, mình xin chịu.", "Chung cuộc, mình bị chiếu bí, xin chúc mừng đối thủ."}
               }
             };
 
-            static final String[] HIT = {
-              "Đối thủ đi đúng như mình dự tính.", "Diễn biến đúng như mình đã nghĩ.",
-              "Nước đáp này nằm trong dự tính của mình.", "Đối thủ chọn đúng hướng mà mình đã đoán."};
-            static final String[] MISS = {
-              "Đối thủ chọn hướng khác với dự tính của mình, mình cần tính lại.",
-              "Nước đáp này nằm ngoài dự tính, mình phải điều chỉnh kế hoạch."};
             static final String[] OPP_BAD = {
               "Đây không phải nước tốt nhất của đối thủ, thế cờ nghiêng thêm về phía mình.",
               "Nước đi này của đối thủ chưa chính xác, mình được lợi thế rõ hơn.",
-              "Đối thủ đi chưa chuẩn, mình nhận thêm cơ hội."};
+              "Đối thủ đi chưa chuẩn, mình nhận thêm cơ hội.",
+              "Đối thủ đi chưa tối ưu, mình nhận được cơ hội tốt.",
+              "Nước này làm thế trận của đối thủ lung lay."};
             static final String[] OPP_BAD_H = {"Nước này hơi ẩu, thế cờ nghiêng thêm về phía mình rồi.", "Đối thủ đi chưa chuẩn, mình cảm ơn món quà."};
             static final String[] OPP_GOOD = {
               "Đây là nước đi tốt của đối thủ, thế cờ bớt thuận lợi cho mình.",
               "Đối thủ chơi chính xác, mình phải dè chừng hơn.",
-              "Nước đáp trả hay, đối thủ gỡ lại được một phần thế trận."};
+              "Nước đáp trả hay, đối thủ gỡ lại được một phần thế trận.",
+              "Đối thủ đáp trả rất khéo léo.",
+              "Nước đi hay, đối thủ lấy lại thế cân bằng."};
             static final String[] OPP_GOOD_H = {"Nước này hay đấy, mình phải công nhận.", "Đối thủ chơi đẹp, mình bị gỡ lại một chút."};
-            static final String[] PLAN2 = {
-              "Mình dự tính: nếu đối thủ đáp bằng %a, mình sẽ tiếp tục với %b.",
-              "Kế hoạch của mình là nếu đối thủ đi %a thì mình sẽ đáp %b.",
-              "Theo tính toán của mình, nếu đối thủ chọn %a, mình sẽ đi tiếp %b."};
-            static final String[] PLAN1 = {"Mình dự đoán đối thủ sẽ đáp bằng %a.", "Mình cho rằng đối thủ sẽ đi %a."};
+            // Chỉ ra sai lầm của đối thủ và nước hợp lý hơn (%a = nước máy cho là tốt hơn)
+            static final String[] BAD_SMALL = {
+              "Nước này chưa chính xác. Đối thủ nên đi %a thì thế cờ sẽ cân bằng hơn.",
+              "Đây chưa phải lựa chọn tốt nhất. Phương án hợp lý hơn cho đối thủ là %a.",
+              "Nước đi này hơi dễ dãi; đối thủ nên chọn %a để giữ thế trận chắc chắn hơn.",
+              "Đối thủ có thể làm tốt hơn với %a.",
+              "Nước này hơi vội, %a mới là lựa chọn chặt chẽ hơn."};
+            static final String[] BAD_SMALL_H = {"Hơi vội rồi, đáng ra đối thủ nên đi %a mới đúng bài."};
+            static final String[] BAD_BIG = {
+              "Đây là một sai lầm của đối thủ. Lẽ ra nên đi %a để hạn chế thiệt hại.",
+              "Đối thủ đã đi sai ở nước này; nước hợp lý hơn là %a, giúp họ giữ được thế cờ.",
+              "Nước này làm thế cờ nghiêng hẳn về phía mình. Đối thủ nên chọn %a thì ván cờ còn cân bằng.",
+              "Đây là bước đi sai, đối thủ cần chọn %a để giữ thế cờ.",
+              "Đối thủ đã đánh mất lợi thế ở nước này; %a mới là nước đúng."};
+            static final String[] BAD_BIG_H = {"Ối, nước này ẩu thật, đối thủ phải đi %a mới đúng."};
+            // Nước đi then chốt: khoảnh khắc làm thế cờ thay đổi lớn
+            static final String[] KEY_LEAD = {
+              "Đây là nước đi then chốt của ván cờ.", "Đến đây là bước ngoặt của ván cờ.", "Nước đi này quyết định diễn biến của cả ván.",
+              "Đây là khoảnh khắc quyết định của ván cờ.",
+              "Thế cờ thay đổi mạnh ngay từ nước đi này."};
+            static final String[] KEY_LEAD_H = {"Khoảnh khắc quyết định đây rồi."};
+            static final String[] KEY_MISS = {
+              "Đối thủ đã bỏ lỡ nước %a, vốn là lựa chọn hợp lý hơn, và phải trả giá ngay sau đó.",
+              "Lẽ ra đối thủ nên đi %a để giữ vững thế trận, nhưng họ đã chọn hướng khác.",
+              "Nước đúng ở đây là %a; chọn hướng khác khiến đối thủ rơi vào thế bị động.",
+              "Nếu chọn %a, đối thủ đã giữ được thế trận; tiếc là họ không đi như vậy.",
+              "%a mới là hướng đi đúng, còn nước vừa rồi đã mở cửa cho mình."};
+            static final String[] KEY_MISS_NB = {
+              "Đối thủ đã đi sai ở thời điểm quan trọng này và để lộ điểm yếu.",
+              "Ở thời điểm quan trọng, đối thủ không tìm được cách đáp chính xác."};
+            static final String[] KEY_GOOD = {
+              "Đối thủ đã tìm ra một nước đi rất chính xác, đảo ngược cục diện.",
+              "Đây là nước đi hay của đối thủ, buộc mình phải đối phó.",
+              "Đối thủ nắm đúng thời điểm và giành lại thế chủ động.",
+              "Đối thủ đi một nước rất sắc sảo, cục diện đảo chiều ngay lập tức.",
+              "Đây là nước đi xuất sắc, đối thủ đã bẻ lái ván cờ."};
+            static final String[] KEY_FOLLOW = {
+              "Đây chính là nước giúp mình tận dụng sai lầm vừa rồi của đối thủ.",
+              "Mình đi nước này để khai thác ngay sai lầm của đối thủ.",
+              "Đây là nước mình chờ sẵn để biến sai lầm của đối thủ thành lợi thế.",
+              "Mình không bỏ lỡ cơ hội và khai thác ngay nước đi sai của đối thủ."};
+            static final String[] CATW = {"mình sắp thắng", "mình hơn rõ rệt", "mình hơn nhẹ", "cân bằng", "mình kém nhẹ", "mình kém rõ rệt", "mình sắp bị chiếu bí"};
+            static final String[] SHIFT = {"Thế cờ chuyển từ %x sang %y.", "Sau nước này, thế cờ đổi từ %x sang %y."};
             static final String[] TOTAL = {
               "Tổng kết ván cờ: mình ăn được %a quân của đối thủ, còn đối thủ ăn của mình %b quân.",
-              "Tổng kết lại, mình ăn %a quân, đối thủ ăn %b quân."};
+              "Tổng kết lại, mình ăn %a quân, đối thủ ăn %b quân.",
+              "Nhìn lại ván cờ, mình ăn %a quân, còn đối thủ ăn %b quân.",
+              "Kết thúc ván cờ, mình thu về %a quân và để mất %b quân."};
             static final String[] TOTAL_H = {
               "Điểm danh chiến lợi phẩm nào: mình ăn %a quân, đối thủ ăn %b quân.",
               "Tổng kết nhanh: mình bỏ túi %a quân, đối thủ lấy được %b quân."};
-            static final String[] NOCAP = {"Tổng kết ván cờ: hai bên chưa ăn quân nào.", "Tổng kết lại, cả hai bên chưa ăn quân nào."};
+            static final String[] NOCAP = {"Tổng kết ván cờ: hai bên chưa ăn quân nào.", "Tổng kết lại, cả hai bên chưa ăn quân nào.",
+              "Tổng kết ván cờ: hai bên đều chưa ăn quân nào, đây là một ván cờ rất thận trọng."};
             static final String[] NOCAP_H = {"Tổng kết: hai bên lịch sự quá, chưa ai ăn quân nào."};
-            static final String[] MORE = {"Về lực lượng, mình có phần nhỉnh hơn.", "Xét về số quân đã ăn, mình đang dẫn trước."};
-            static final String[] LESS = {"Về lực lượng, mình đang kém đối thủ một chút.", "Xét về số quân đã ăn, đối thủ đang dẫn trước."};
-            static final String[] EQUAL = {"Về lực lượng, hai bên cân bằng.", "Số quân đã ăn của hai bên bằng nhau."};
+            static final String[] MORE = {"Về lực lượng, mình có phần nhỉnh hơn.", "Xét về số quân đã ăn, mình đang dẫn trước.",
+              "Tính riêng số quân ăn được, mình đang chiếm ưu thế."};
+            static final String[] LESS = {"Về lực lượng, mình đang kém đối thủ một chút.", "Xét về số quân đã ăn, đối thủ đang dẫn trước.",
+              "Về số quân ăn được, đối thủ đang nhỉnh hơn."};
+            static final String[] EQUAL = {"Về lực lượng, hai bên cân bằng.", "Số quân đã ăn của hai bên bằng nhau.",
+              "Hai bên ăn số quân như nhau, mọi thứ vẫn đang cân bằng."};
             static final String[] MID = {
               "Sau những nước khai cuộc, ván cờ bước vào giai đoạn trung cuộc.",
               "Các quân đã ra hết, ván cờ bước sang giai đoạn trung cuộc.",
-              "Từ đây, ván cờ chuyển sang giai đoạn trung cuộc, giao tranh bắt đầu rõ nét."};
+              "Từ đây, ván cờ chuyển sang giai đoạn trung cuộc, giao tranh bắt đầu rõ nét.",
+              "Ván cờ bước vào trung cuộc, đây là lúc các quân bắt đầu giao chiến thật sự."};
             static final String[] END = {
               "Ván cờ đã đi vào giai đoạn cuối, từng nước đi lúc này đều cần tính kỹ.",
               "Bước sang những nước cuối, mọi sai sót đều phải trả giá.",
-              "Đây là giai đoạn quyết định của ván cờ."};
-            static final String[] HTAG = {"Khá tinh quái đấy.", "Nghe cũng hợp lý đấy chứ.", "Cờ tướng là vậy mà.", "Đúng chất cao thủ."};
-            static final String[] LINK = {"Đồng thời, ", "Bên cạnh đó, ", "Ngoài ra, ", "Không chỉ vậy, "};
+              "Đây là giai đoạn quyết định của ván cờ.",
+              "Những nước cuối này sẽ quyết định kết quả của ván cờ."};
+            static final String[] HTAG = {"Khá tinh quái đấy.", "Nghe cũng hợp lý đấy chứ.", "Cờ tướng là vậy mà.", "Đúng chất cao thủ.",
+              "Chiêu này nghe quen quen.",
+              "Đúng bài bản cao thủ."};
+            static final String[] LINK = {"Đồng thời, ", "Bên cạnh đó, ", "Ngoài ra, ", "Không chỉ vậy, ",
+              "Hơn nữa, ",
+              "Thêm vào đó, "};
 
             // Đổi số trong ký hiệu nước đi ("Pháo 2 bình 5") thành chữ để giọng đọc phát âm chắc chắn
             static String spoken(String t) {
@@ -2565,12 +2685,36 @@ jobs:
             // Thêm một câu giải thích kèm chủ đề (tag) để kiểm soát việc nhắc lặp
             static void add(ArrayList<String> ls, ArrayList<String> tags, String s, String tag) { ls.add(s); tags.add(tag); }
 
-            // Các câu giải thích vì sao đi nước này (mặt lợi) và mặt mạnh/yếu của nó. Phần ăn quân đã nói riêng ở capLine.
-            static void why(List<String> out, boolean mine, String why, int i, boolean hadCap) {
+            // Câu nói về hướng đi của quân (tiến, lùi, đi ngang) dùng cho những nước không có gì đặc biệt hơn để nói
+            static String dirLine(boolean mine, String mvText) {
+              if (mvText == null) return null;
+              if (mvText.contains(" tiến "))
+                return mine
+                    ? pick("Mình đẩy quân lên phía trước để mở rộng phạm vi hoạt động.", "Quân tiến lên phía trước, tăng thêm áp lực lên phần sân đối phương.",
+                           "Nước tiến này giúp mình giành thêm không gian.", "Mình tiến quân từng bước, giữ nhịp độ của ván cờ.")
+                    : pick("Đối thủ đẩy quân lên, thu hẹp không gian của mình.", "Quân của đối thủ tiến lên, thế trận bắt đầu dịch chuyển.",
+                           "Đối thủ chủ động tiến quân, mình cần theo dõi sát.", "Đối thủ giành thêm một ít không gian.");
+              if (mvText.contains(" thoái "))
+                return mine
+                    ? pick("Một bước lùi để củng cố và giữ thế trận gọn gàng.", "Mình lùi quân về phòng thủ, chờ cơ hội thích hợp.",
+                           "Lùi một bước để nhìn rộng hơn, đó cũng là cách chơi khôn ngoan.", "Nước lùi này nhằm giữ cho đội hình không bị hở.")
+                    : pick("Đối thủ lùi quân để củng cố, cho thấy họ đang dè chừng.", "Một bước lùi của đối thủ, nhịp tấn công tạm chững lại.",
+                           "Đối thủ rút quân về, mình có thêm thời gian triển khai.", "Đối thủ lùi quân để giữ đội hình chắc chắn.");
+              if (mvText.contains(" bình "))
+                return mine
+                    ? pick("Mình đi ngang để đổi hướng và chuẩn bị cho nước kế tiếp.", "Nước đi ngang giúp quân chuyển sang cột có lợi hơn.",
+                           "Mình dịch quân sang bên, nhắm đến một mục tiêu mới.", "Đi ngang một bước, mình điều chỉnh vị trí cho linh hoạt hơn.")
+                    : pick("Đối thủ đi ngang để đổi hướng tấn công.", "Quân của đối thủ chuyển sang cột khác, mình cần theo dõi.",
+                           "Đối thủ dịch quân sang bên, thế trận có chút thay đổi.", "Đối thủ điều chỉnh vị trí, chưa có đe dọa nào mới.");
+              return null;
+            }
+
+            // Các câu giải thích vì sao đi nước này (mặt lợi) và mặt hại của nó. Phần ăn quân đã nói riêng ở capLine.
+            static void why(List<String> out, boolean mine, String why, int i, boolean hadCap, String mvText) {
               if (why == null) why = "";
               if (level == 0) {   // ngắn: chỉ báo chiếu tướng
                 if (tok(why, "CHK") != null)
-                  out.add(mine ? pick("Nước này chiếu tướng đối thủ.", "Mình chiếu tướng đối thủ.") : pick("Đối thủ chiếu tướng mình.", "Mình đang bị chiếu."));
+                  out.add(mine ? pick("Nước này chiếu tướng đối thủ.", "Mình chiếu tướng đối thủ.", "Đây là nước chiếu tướng.") : pick("Đối thủ chiếu tướng mình.", "Mình đang bị chiếu.", "Mình bị đối thủ chiếu tướng."));
                 return;
               }
               ArrayList<String> ls = new ArrayList<String>();      // mặt lợi / điểm đáng nói
@@ -2578,21 +2722,35 @@ jobs:
               ArrayList<String> hurt = new ArrayList<String>();    // mặt hại
               if (tok(why, "EVC") != null)
                 add(ls, tg, mine
-                    ? pick(mix(new String[]{"Mình đang bị chiếu nên phải hóa giải ngay trước khi tính chuyện khác.",
-                                            "Nước đi này gần như bắt buộc để thoát thế chiếu.",
-                                            "Mình bị chiếu, nên việc đầu tiên là hóa giải thế chiếu."}, null))
+                    ? pick("Mình đang bị chiếu nên phải hóa giải ngay trước khi tính chuyện khác.",
+                           "Nước đi này gần như bắt buộc để thoát thế chiếu.",
+                           "Mình bị chiếu, nên việc đầu tiên là hóa giải thế chiếu.",
+                           "Tướng đang bị uy hiếp, mình không còn lựa chọn nào khác ngoài việc đỡ.",
+                           "Đây là nước đỡ chiếu, chưa phải lúc nghĩ đến tấn công.",
+                           "Trước tiên phải lo cho Tướng, nên mình chọn cách hóa giải thế chiếu.",
+                           "Mình buộc phải nhường nhịp để hóa giải thế chiếu.")
                     : pick("Đối thủ đang bị chiếu nên chỉ còn cách hóa giải.",
                            "Đối thủ phải dành nước này để đỡ thế chiếu, mất đi một nhịp.",
-                           "Bị chiếu, đối thủ buộc phải đối phó và không còn thời gian cho kế hoạch riêng."), null);
+                           "Bị chiếu, đối thủ buộc phải đối phó và không còn thời gian cho kế hoạch riêng.",
+                           "Tướng đối thủ bị uy hiếp nên họ không có lựa chọn nào khác ngoài việc đỡ.",
+                           "Đối thủ phải hóa giải thế chiếu, quyền chủ động đang nằm ở phía mình.",
+                           "Đây là nước bắt buộc để đối thủ thoát chiếu."), null);
               if (tok(why, "CHK") != null)
                 add(ls, tg, mine
                     ? pick(mix(new String[]{"Đây là nước chiếu tướng, buộc đối thủ phải đối phó ngay.",
                                             "Nước chiếu này giữ thế chủ động, đối thủ không có thời gian làm việc khác.",
-                                            "Thế chiếu tạo áp lực trực tiếp lên cung của đối thủ."},
-                              new String[]{"Chiếu tướng nhé, mời đối thủ lo thân trước."}))
+                                            "Thế chiếu tạo áp lực trực tiếp lên cung của đối thủ.",
+                                            "Mình chiếu tướng để giành nhịp, đối thủ phải đỡ ngay.",
+                                            "Chiếu tướng lúc này vừa tạo áp lực vừa giúp mình định hướng ván cờ.",
+                                            "Một nước chiếu đúng lúc, đối thủ chỉ còn cách hóa giải.",
+                                            "Mình tung đòn chiếu, ép đối thủ vào thế bị động."},
+                              new String[]{"Chiếu tướng nhé, mời đối thủ lo thân trước.", "Chiếu rồi nhé, đối thủ đừng hoảng."}))
                     : pick("Đối thủ chiếu tướng, mình phải đỡ ngay.",
                            "Mình bị chiếu và cần xử lý trước tiên.",
-                           "Nước chiếu của đối thủ buộc mình phải đáp lại."), null);
+                           "Nước chiếu của đối thủ buộc mình phải đáp lại.",
+                           "Đối thủ tung đòn chiếu, mình phải bình tĩnh tìm cách hóa giải.",
+                           "Bị chiếu bất ngờ, mình cần đỡ cẩn thận để không rơi vào thế khó.",
+                           "Đối thủ chiếu để giữ thế chủ động, mình phải lo cho Tướng trước."), null);
               String thr = tok(why, "THR");
               if (thr != null && thr.length() > 0) {
                 String th = thr.replace("+", " và ");
@@ -2600,96 +2758,153 @@ jobs:
                     ? pick("Nước đi này đe dọa ăn %s của đối thủ, buộc họ phải lo giữ quân.",
                            "%s của đối thủ bị nhắm tới, đối thủ phải bỏ thời gian để bảo vệ.",
                            "Mình tạo ra đe dọa vào %s của đối thủ, đối thủ không thể đi tự do.",
-                           "Đòn này nhắm thẳng vào %s của đối thủ, đối thủ phải đáp lại.")
+                           "Đòn này nhắm thẳng vào %s của đối thủ, đối thủ phải đáp lại.",
+                           "%s của đối thủ rơi vào tầm tấn công, đối thủ phải xử lý ngay.",
+                           "Mình bày ra mối đe dọa với %s của đối thủ, ép họ phải chọn giữa phòng thủ và phản công.",
+                           "Đối thủ phải lo cho %s, vì mình sắp ra đòn.")
                     : pick("Nước đi này đe dọa ăn %s của mình, mình cần xử lý.",
                            "Đối thủ đang nhắm vào %s của mình, mình phải tính cách đỡ.",
                            "%s của mình đang bị uy hiếp sau nước này, cần có biện pháp.",
-                           "Mình phải lo cho %s, vì đối thủ vừa tạo ra đe dọa.")).replace("%s", th), null);
+                           "Mình phải lo cho %s, vì đối thủ vừa tạo ra đe dọa.",
+                           "%s của mình bị đối thủ nhắm tới, mình không thể chủ quan.",
+                           "Đối thủ chủ động tạo áp lực lên %s của mình.",
+                           "Mối đe dọa vào %s của mình buộc mình phải đáp lại chính xác.")).replace("%s", th), null);
               }
               String esc = tok(why, "ESC");
               if (esc != null && esc.length() > 0)
                 add(ls, tg, (mine
                     ? pick("Nước đi cũng đưa %s thoát khỏi đòn đe dọa của đối thủ.",
                            "Mình kịp đưa %s ra khỏi tầm tấn công của đối thủ.",
-                           "%s của mình rút khỏi vùng nguy hiểm, không còn bị đe dọa.")
+                           "%s của mình rút khỏi vùng nguy hiểm, không còn bị đe dọa.",
+                           "Mình rút %s khỏi thế bị truy đuổi, giữ nguyên lực lượng.",
+                           "Nhờ nước đi này, %s của mình thoát khỏi thế bị bắt.",
+                           "Mình giải cứu %s đúng lúc, tránh một tổn thất không đáng có.")
                     : pick("Đối thủ kịp đưa %s thoát khỏi đòn của mình.",
                            "%s của đối thủ rút khỏi tầm tấn công, đòn đe dọa của mình không còn tác dụng.",
-                           "Đối thủ xử lý gọn, %s thoát nạn.")).replace("%s", esc), null);
+                           "Đối thủ xử lý gọn, %s thoát nạn.",
+                           "Đối thủ cứu %s kịp thời, mình phải tìm hướng tấn công khác.",
+                           "%s của đối thủ thoát khỏi thế bị vây.",
+                           "Đối thủ rút %s ra an toàn, công sức của mình chưa có kết quả.")).replace("%s", esc), null);
               String sv = tok(why, "SAVE");
               if (sv != null && sv.length() > 0)
                 add(ls, tg, (mine
                     ? pick("Nước đi này cũng bảo vệ được %s của mình.",
                            "%s của mình nhờ đó không còn bị đe dọa.",
-                           "Mình vừa đi vừa giữ được %s, một nước đi hiệu quả.")
+                           "Mình vừa đi vừa giữ được %s, một nước đi hiệu quả.",
+                           "Nước đi giúp %s của mình được che chắn an toàn.",
+                           "Mình củng cố %s, xóa bỏ rủi ro đang rình rập.",
+                           "Một nước đi hai tác dụng: triển khai thế trận và bảo vệ %s.")
                     : pick("Đối thủ vừa kịp bảo vệ %s khỏi đòn của mình.",
                            "%s của đối thủ đã được che chắn, đòn đe dọa của mình không còn tác dụng.",
-                           "Đối thủ giữ được %s, mình cần tìm hướng khác.")).replace("%s", sv), null);
+                           "Đối thủ giữ được %s, mình cần tìm hướng khác.",
+                           "Đối thủ phản ứng nhanh, %s đã an toàn.",
+                           "Đối thủ củng cố %s đúng lúc.",
+                           "%s của đối thủ được bảo vệ chắc chắn, mình phải tìm mục tiêu khác.")).replace("%s", sv), null);
               if (tok(why, "QS") != null && canUse(mine, "QS", i, 10))
                 add(ls, tg, mine
                     ? pick("Tốt đã qua sông, có thể đi ngang và bắt đầu tạo áp lực lên cung đối thủ.",
                            "Quân Tốt qua sông trở nên linh hoạt hơn, có thêm hướng tấn công.",
-                           "Tốt vượt sông, lực uy hiếp tăng lên đáng kể.")
+                           "Tốt vượt sông, lực uy hiếp tăng lên đáng kể.",
+                           "Tốt sang bờ bên kia là có thêm quyền đi ngang, uy hiếp tăng lên rõ rệt.",
+                           "Quân Tốt đã qua sông, giờ nó vừa tiến vừa đi ngang, rất khó chịu cho đối thủ.")
                     : pick("Tốt của đối thủ qua sông, bắt đầu gây áp lực lên cung của mình.",
                            "Đối thủ đưa Tốt qua sông, mình cần để ý các đường đi ngang.",
-                           "Tốt qua sông giúp đối thủ có thêm quân tấn công."), "QS");
+                           "Tốt qua sông giúp đối thủ có thêm quân tấn công.",
+                           "Mình cần dè chừng quân Tốt vừa vượt sông của đối thủ.",
+                           "Đối thủ có thêm một quân tham gia tấn công sau khi Tốt qua sông."), "QS");
               if (tok(why, "PD") != null && canUse(mine, "PD", i, 8))
                 add(ls, tg, mine
                     ? pick("Pháo vào giữa, nhắm thẳng vào cung đối thủ và mở đường cho đòn tấn công trung lộ.",
                            "Pháo chiếm trung lộ, tạo áp lực trực tiếp lên cung đối thủ.",
-                           "Mình đặt Pháo vào giữa, hướng thẳng về phía Tướng đối thủ.")
+                           "Mình đặt Pháo vào giữa, hướng thẳng về phía Tướng đối thủ.",
+                           "Trung lộ trở thành mặt trận chính khi Pháo của mình vào vị trí.",
+                           "Pháo trung được đặt vào đúng điểm mấu chốt của bàn cờ.")
                     : pick("Đối thủ đặt Pháo vào giữa, tạo áp lực lên trung lộ của mình.",
                            "Pháo của đối thủ vào giữa, mình cần chú ý các đường tấn công ở trung lộ.",
-                           "Trung lộ của mình bắt đầu chịu sức ép từ Pháo đối thủ."), "PD");
+                           "Trung lộ của mình bắt đầu chịu sức ép từ Pháo đối thủ.",
+                           "Đối thủ dồn lực về trung lộ, Pháo giữa tạo áp lực lên cung của mình.",
+                           "Pháo đối thủ chiếm điểm giữa, mình phải thận trọng với các đòn nhắm vào Tốt giữa."), "PD");
               String dev = tok(why, "DEV");
               if (dev != null && dev.length() > 0 && i < 30 && canUse(mine, "DEV", i, 5))
                 add(ls, tg, (mine
                     ? pick("Mình đưa %s ra ngoài, bắt đầu tham gia vào cuộc chiến.",
                            "%s được triển khai, giúp thế trận của mình linh hoạt hơn.",
                            "Việc đưa %s ra khỏi vị trí ban đầu giúp mình có thêm quân hoạt động.",
-                           "Mình khai thông %s để các quân phối hợp tốt hơn.")
+                           "Mình khai thông %s để các quân phối hợp tốt hơn.",
+                           "Mình tranh thủ đưa %s vào vị trí tốt, chuẩn bị cho các bước sau.",
+                           "%s ra quân đúng lúc, thế trận của mình dần thành hình.",
+                           "Mình huy động thêm %s, tăng số quân tham chiến.")
                     : pick("Đối thủ đưa %s ra hoạt động, thế trận bắt đầu căng lên.",
                            "%s của đối thủ được triển khai, hai bên bắt đầu giao tranh.",
-                           "Đối thủ triển khai %s, chuẩn bị cho các bước tiếp theo.")).replace("%s", dev), "DEV");
+                           "Đối thủ triển khai %s, chuẩn bị cho các bước tiếp theo.",
+                           "Đối thủ huy động thêm %s, thế trận dần rõ nét.",
+                           "%s của đối thủ vào vị trí, mình cần theo dõi sát.",
+                           "Đối thủ khai thông %s, tăng cường lực lượng tấn công.")).replace("%s", dev), "DEV");
               if (tok(why, "XC") != null && canUse(mine, "XC", i, 8))
                 add(ls, tg, mine
                     ? pick("Xe chiếm được cột thoáng, về sau dễ tạo ra những đe dọa mới.",
                            "Xe có đường đi thông suốt trên cột này, rất thuận lợi cho tấn công.",
-                           "Cột đã thoáng, Xe của mình phát huy được sức mạnh.")
+                           "Cột đã thoáng, Xe của mình phát huy được sức mạnh.",
+                           "Xe được tự do hoạt động trên cột thoáng, mình có thêm nhiều lựa chọn.",
+                           "Nhờ cột thông thoáng, Xe của mình có thể tung đòn bất cứ lúc nào.")
                     : pick("Xe đối thủ chiếm cột thoáng, mình cần để ý các đường Xe.",
                            "Cột đã mở cho Xe đối thủ, mình phải canh chừng.",
-                           "Xe đối thủ có đường đi thông thoáng, có thể gây phiền toái."), "XC");
+                           "Xe đối thủ có đường đi thông thoáng, có thể gây phiền toái.",
+                           "Xe đối thủ chiếm được cột thoáng, mình phải đề phòng những đòn bất ngờ.",
+                           "Cột thoáng giúp Xe đối thủ hoạt động tự do hơn."), "XC");
               if (tok(why, "DF") != null && canUse(mine, "DF", i, 8))
                 add(ls, tg, mine
                     ? pick("Mình củng cố cung, giảm nguy cơ bị chiếu, tuy nhiên không tăng thêm sức tấn công.",
                            "Nước đi chắc chắn, gia cố hàng phòng thủ trước khi tính chuyện tấn công.",
-                           "Mình ưu tiên an toàn cho cung, đổi lại nhịp tấn công chậm lại một chút.")
+                           "Mình ưu tiên an toàn cho cung, đổi lại nhịp tấn công chậm lại một chút.",
+                           "Mình chọn cách làm chắc chắn, gia cố cung trước rồi mới tính tiếp.",
+                           "Nước phòng thủ cần thiết để cung của mình không còn kẽ hở.",
+                           "Cung được củng cố, mình có thể yên tâm hơn khi triển khai quân.")
                     : pick("Đối thủ củng cố cung, nên tạm thời khó tấn công trực tiếp.",
                            "Đối thủ gia cố phòng thủ, mình cần kiên nhẫn tìm cơ hội khác.",
-                           "Hàng phòng thủ của đối thủ chắc hơn, tấn công trực diện lúc này khó có hiệu quả."), "DF");
+                           "Hàng phòng thủ của đối thủ chắc hơn, tấn công trực diện lúc này khó có hiệu quả.",
+                           "Đối thủ che chắn cung kỹ hơn, tấn công lúc này sẽ gặp nhiều khó khăn.",
+                           "Cung của đối thủ đã bớt sơ hở.",
+                           "Đối thủ chọn cách phòng thủ chắc chắn."), "DF");
               if (tok(why, "KG") != null && canUse(mine, "KG", i, 6))
                 add(ls, tg, mine
                     ? pick("Tướng nhích nhẹ để tránh áp lực, đổi lại cung bớt chắc.",
-                           "Mình dời Tướng để thoát thế bị ép, dù cung có phần lỏng hơn.")
-                    : pick("Tướng đối thủ đổi vị trí để tránh áp lực.", "Đối thủ dời Tướng cho đỡ bị ép."), "KG");
+                           "Mình dời Tướng để thoát thế bị ép, dù cung có phần lỏng hơn.",
+                           "Tướng đổi vị trí để tránh bị khóa chặt, mình chấp nhận cung có phần thoáng hơn.")
+                    : pick("Tướng đối thủ đổi vị trí để tránh áp lực.", "Đối thủ dời Tướng cho đỡ bị ép.",
+                           "Đối thủ nhích Tướng để thoát thế bị khóa, cung của họ cũng vì thế mà lỏng hơn."), "KG");
               String rk = tok(why, "RISK");
               if (rk != null && rk.length() > 0) {
                 if (mine) hurt.add(pick("Cần lưu ý: sau nước này %s của mình đang bị uy hiếp, phải chú ý bảo vệ.",
                                         "Mặt hại của nước đi là %s bị đe dọa, mình phải cẩn thận ở nước sau.",
-                                        "Rủi ro cần tính đến: %s đang nằm trong tầm tấn công của đối thủ.").replace("%s", rk));
+                                        "Rủi ro cần tính đến: %s đang nằm trong tầm tấn công của đối thủ.",
+                                        "Điểm cần cẩn trọng: %s của mình đang bị đe dọa sau nước đi này.",
+                                        "Nước này có cái giá của nó: %s bị đặt vào thế nguy hiểm.",
+                                        "Mình phải để mắt tới %s, vì quân này đang chưa an toàn.").replace("%s", rk));
                 else add(ls, tg, pick("Điểm yếu của đối thủ: %s đang bị mình để mắt tới, có thể khai thác.",
                                       "%s của đối thủ chưa an toàn, đây là mục tiêu mình có thể nhắm tới.",
-                                      "Mình chú ý %s của đối thủ, quân này đang là điểm yếu.").replace("%s", rk), null);
+                                      "Mình chú ý %s của đối thủ, quân này đang là điểm yếu.",
+                                      "%s của đối thủ đang lộ điểm yếu, mình sẽ tìm cách khai thác.",
+                                      "Mình thấy %s của đối thủ chưa được bảo vệ chắc chắn.",
+                                      "Cơ hội đang mở ra khi %s của đối thủ chưa an toàn.").replace("%s", rk), null);
               }
-              // nước đi kín: không có gì đáng nói thì thôi, chỉ thỉnh thoảng mới nhận xét
+              // nước đi kín: không có gì đáng nói thì thôi, chỉ thỉnh thoảng mới nhận xét (hoặc nói về hướng đi của quân)
               if (ls.isEmpty() && hurt.isEmpty() && !hadCap && canUse(mine, "Q", i, 7)) {
-                add(ls, tg, mine
+                String dl = rnd.nextBoolean() ? dirLine(mine, mvText) : null;
+                add(ls, tg, dl != null ? dl : mine
                     ? pick("Đây là nước đi chắc, chưa ăn quân hay đe dọa trực tiếp, chủ yếu nhằm cải thiện thế trận.",
                            "Một nước đi kín, không có gì đột biến nhưng giúp mình chuẩn bị cho bước sau.",
                            "Mình chưa vội tấn công, ưu tiên điều chỉnh vị trí quân cho hợp lý.",
-                           "Nước đi yên tĩnh, thế cờ vẫn giữ nguyên nhịp.")
+                           "Nước đi yên tĩnh, thế cờ vẫn giữ nguyên nhịp.",
+                           "Mình đi một nước chậm mà chắc, giữ nguyên thế trận.",
+                           "Chưa có gì đột biến, mình tiếp tục điều chỉnh để chờ thời cơ.",
+                           "Nước đi thiên về cải thiện vị trí quân hơn là tạo đột biến.")
                     : pick("Đối thủ đi một nước nhẹ nhàng, chưa tạo ra đe dọa trực tiếp.",
                            "Nước đi của đối thủ khá kín, chưa có gì đáng lo.",
-                           "Đối thủ chưa vội hành động, mình tiếp tục quan sát."), "Q");
+                           "Đối thủ chưa vội hành động, mình tiếp tục quan sát.",
+                           "Đối thủ chọn nước đi an toàn, không tạo ra thay đổi lớn.",
+                           "Thế cờ vẫn chưa có biến động, đối thủ đang thăm dò.",
+                           "Đối thủ điều chỉnh vị trí quân, chưa có đe dọa nào mới."), "Q");
               }
               int maxLs = level == 1 ? 1 : ls.size();
               int said = 0;
@@ -2713,6 +2928,195 @@ jobs:
               return b.toString();
             }
 
+            // ---------- Nhận diện thế khai cuộc và tên gọi các thế quân ----------
+            static final String[] TN = {"Xe", "Mã", "Pháo", "Tượng", "Sĩ", "Tướng", "Tốt"};
+            static final Pattern MVP = Pattern.compile("^(Xe|Mã|Pháo|Tượng|Sĩ|Tướng|Tốt) ([1-9]) (tiến|thoái|bình) ([1-9])$");
+            static final String[] TERM = {
+              "Đây là thế %t: %d", "Nước này tạo nên thế %t: %d", "Trong cờ tướng, thế này gọi là %t: %d",
+              "Đây chính là thế %t: %d",
+              "Người chơi cờ thường gọi đây là %t: %d"};
+
+            static int tIdx(String s) { for (int i = 0; i < TN.length; i++) if (TN[i].equals(s)) return i; return -1; }
+
+            static String cap(String s) { return s.length() == 0 ? s : Character.toUpperCase(s.charAt(0)) + s.substring(1); }
+
+            // Lời giải thích ngắn cho từng tên thế
+            static String desc(String name) {
+              if (name.equals("Pháo đầu")) return "đây là lối khai cuộc quen thuộc và mạnh mẽ nhất của cờ tướng, đặt Pháo giữa bàn để nhắm thẳng vào trung lộ và quân Tốt giữa của đối phương.";
+              if (name.equals("Bình phong mã")) return "hai Mã đứng hai bên như tấm bình phong che chắn cho nhau, thế trận vững chãi, công thủ toàn diện.";
+              if (name.equals("Pháo đầu đối Bình phong mã")) return "thế trận kinh điển nhất của cờ tướng: một bên chủ động tấn công trung lộ, bên kia phòng thủ chắc chắn bằng hai Mã.";
+              if (name.equals("Thuận pháo")) return "hai bên cùng đưa Pháo vào giữa theo cùng một hướng, ván cờ thường bùng nổ sớm và đổi quân nhiều.";
+              if (name.equals("Liệt pháo")) return "hai Pháo đối đầu nhau trên hai cánh, trận đấu căng thẳng và nhiều biến hóa.";
+              if (name.equals("Phi tượng cuộc")) return "ưu tiên phòng thủ chắc chắn bằng cách bay Tượng lên giữa, rồi mới tính chuyện phản công.";
+              if (name.equals("Tiên nhân chỉ lộ")) return "tiến Tốt đầu để thăm dò và mở đường, giữ lại nhiều lựa chọn cho các nước sau.";
+              if (name.equals("Đối binh cuộc")) return "hai bên cùng tiến Tốt, thế trận ổn định và thiên về đấu trí.";
+              if (name.equals("Khởi mã cuộc")) return "ra Mã trước để triển khai lực lượng nhanh và giữ cho thế trận linh hoạt.";
+              if (name.equals("Sĩ giác pháo")) return "đưa Pháo về góc Sĩ, vừa bảo vệ cung vừa chờ thời cơ tấn công.";
+              if (name.equals("Quá cung pháo")) return "Pháo vượt qua cung sang cánh đối diện, tạo thế công thủ khó lường.";
+              if (name.equals("Xe tuần hà")) return "Xe lên tuyến Tốt, canh giữ bờ sông và sẵn sàng chi viện cho cả hai cánh.";
+              if (name.equals("Xe kỵ hà")) return "Xe đứng sát bờ sông, vừa giữ nhà vừa tạo áp lực lên đối phương.";
+              if (name.equals("Xe qua hà")) return "Xe vượt sông, đột nhập thẳng sang nửa bàn của đối phương.";
+              if (name.equals("Xe trực")) return "Xe tiến thẳng theo cột biên, mở sẵn đường đi cho các nước sau.";
+              if (name.equals("Xe hoành")) return "Xe được đưa ngang sang cột trong, khai thông cánh và sẵn sàng phối hợp với Pháo.";
+              if (name.equals("Pháo qua hà")) return "Pháo vượt sông, đưa hỏa lực sang nửa bàn của đối phương.";
+              return "";
+            }
+
+            static ArrayList<int[]> startSide() {
+              ArrayList<int[]> l = new ArrayList<int[]>();
+              int[][] d = {{0, 1, 1}, {0, 9, 1}, {1, 2, 1}, {1, 8, 1}, {3, 3, 1}, {3, 7, 1}, {4, 4, 1}, {4, 6, 1}, {5, 5, 1},
+                           {2, 2, 3}, {2, 8, 3}, {6, 1, 4}, {6, 3, 4}, {6, 5, 4}, {6, 7, 4}, {6, 9, 4}};   // {loại quân, cột, hàng} tính từ phía mỗi bên
+              for (int[] x : d) l.add(x.clone());
+              return l;
+            }
+
+            // Theo dõi vị trí quân của từng bên để gọi tên thế quân (Xe tuần hà, Bình phong mã...).
+            // termAt[i] = tên thế sinh ra ở nước i; bpAt[bên] = nước đầu tiên bên đó đủ thế Bình phong mã (-1 nếu chưa).
+            // Gặp ký hiệu lạ (cờ úp, quân trùng cột...) thì bên đó ngừng gọi tên thế quân.
+            static void analyze(List<String[]> mv, String[] termAt, int[] bpAt) {
+              ArrayList<ArrayList<int[]>> st = new ArrayList<ArrayList<int[]>>();
+              st.add(startSide());
+              st.add(startSide());
+              boolean[] broken = new boolean[2];
+              bpAt[0] = -1;
+              bpAt[1] = -1;
+              for (int i = 0; i < mv.size(); i++) {
+                String[] m = mv.get(i);
+                int s = "1".equals(m[0]) ? 1 : 0;
+                if (broken[s]) continue;
+                Matcher x = MVP.matcher(m[1].trim());
+                if (!x.matches()) { broken[s] = true; continue; }
+                int ty = tIdx(x.group(1)), f = x.group(2).charAt(0) - '0', num = x.group(4).charAt(0) - '0';
+                String dir = x.group(3);
+                int[] p = null;
+                for (int[] q : st.get(s)) if (q[0] == ty && q[1] == f) { p = q; break; }
+                if (p == null) { broken[s] = true; continue; }
+                int oldF = p[1], oldR = p[2];
+                if (dir.equals("bình")) p[1] = num;
+                else {
+                  int sg = dir.equals("tiến") ? 1 : -1;
+                  if (ty == 0 || ty == 2 || ty == 5 || ty == 6) p[2] += sg * num;
+                  else {
+                    int df = Math.abs(num - f);
+                    int dr = ty == 1 ? (df == 1 ? 2 : 1) : ty == 3 ? 2 : 1;
+                    p[1] = num;
+                    p[2] += sg * dr;
+                  }
+                }
+                if (p[2] < 1 || p[2] > 10) { broken[s] = true; continue; }
+                String t = null;
+                if (ty == 0 && dir.equals("tiến")) {
+                  int nr = p[2];
+                  if (oldR < 4 && nr == 4) t = "Xe tuần hà";
+                  else if (oldR < 5 && nr == 5) t = "Xe kỵ hà";
+                  else if (oldR < 6 && nr >= 6) t = "Xe qua hà";
+                  else if (oldR == 1 && num == 1 && (f == 1 || f == 9)) t = "Xe trực";
+                } else if (ty == 0 && dir.equals("bình") && oldR <= 2 && (oldF == 1 || oldF == 9) && (num == 2 || num == 8)) t = "Xe hoành";
+                else if (ty == 2 && dir.equals("tiến") && oldR < 6 && p[2] >= 6) t = "Pháo qua hà";
+                else if (ty == 1 && bpAt[s] < 0) {
+                  boolean a3 = false, a7 = false;
+                  for (int[] q : st.get(s)) if (q[0] == 1 && q[2] == 3) { if (q[1] == 3) a3 = true; if (q[1] == 7) a7 = true; }
+                  if (a3 && a7) { bpAt[s] = i; t = "Bình phong mã"; }
+                }
+                termAt[i] = t;
+              }
+            }
+
+            static String nameFirst(Matcher a) {
+              String t = a.group(1), d = a.group(3);
+              int f = a.group(2).charAt(0) - '0', n = a.group(4).charAt(0) - '0';
+              if (t.equals("Pháo") && d.equals("bình")) {
+                if (n == 5 && (f == 2 || f == 8)) return "Pháo đầu";
+                if ((f == 2 && n == 4) || (f == 8 && n == 6)) return "Sĩ giác pháo";
+                if ((f == 2 && n == 6) || (f == 8 && n == 4)) return "Quá cung pháo";
+              }
+              if (t.equals("Tượng") && d.equals("tiến") && n == 5 && (f == 3 || f == 7)) return "Phi tượng cuộc";
+              if (t.equals("Tốt") && d.equals("tiến") && n == 1 && (f == 3 || f == 7)) return "Tiên nhân chỉ lộ";
+              if (t.equals("Mã") && d.equals("tiến") && ((f == 2 && n == 3) || (f == 8 && n == 7))) return "Khởi mã cuộc";
+              return null;
+            }
+
+            // Tên thế khai cuộc: {bên đi trước, bên đi sau, tên chung của cả hai}; phần tử không nhận ra thì null; null nếu không phải cờ thường
+            static String[] opening(List<String[]> mv, int[] bpAt) {
+              if (mv.size() < 2) return null;
+              Matcher a = MVP.matcher(mv.get(0)[1].trim()), b = MVP.matcher(mv.get(1)[1].trim());
+              if (!a.matches() || !b.matches()) return null;
+              String na = nameFirst(a), nb = null, nc = null;
+              int fa = a.group(2).charAt(0) - '0', fb = b.group(2).charAt(0) - '0';
+              int sideB = "1".equals(mv.get(1)[0]) ? 1 : 0;
+              boolean bCentral = b.group(1).equals("Pháo") && b.group(3).equals("bình") && b.group(4).equals("5") && (fb == 2 || fb == 8);
+              if (bCentral) nb = "Pháo đầu";
+              if ("Pháo đầu".equals(na)) {
+                if (bCentral) nc = (fa + fb == 10) ? "Thuận pháo" : fa == fb ? "Liệt pháo" : null;
+                else if (b.group(1).equals("Mã") && bpAt[sideB] >= 0 && bpAt[sideB] <= 12) { nb = "Bình phong mã"; nc = "Pháo đầu đối Bình phong mã"; }
+              } else if ("Tiên nhân chỉ lộ".equals(na) && b.group(1).equals("Tốt") && b.group(3).equals("tiến") && b.group(4).equals("1") && (fb == 3 || fb == 7)) {
+                nb = "Đối binh cuộc";
+                nc = "Đối binh cuộc";
+              }
+              if (na == null && nb == null && nc == null) return null;
+              return new String[]{na, nb, nc};
+            }
+
+            // Đoạn nói về thế khai cuộc của hai bên (đặt ngay sau lời chào)
+            static String openingPara(List<String[]> mv, int[] bpAt) {
+              String[] o = opening(mv, bpAt);
+              if (o == null) return "";
+              boolean firstMine = "1".equals(mv.get(0)[0]);
+              String w1 = firstMine ? "Mình" : "Đối thủ", w2 = firstMine ? "đối thủ" : "mình";
+              if (level == 0) return "Về khai cuộc, đây là thế " + (o[2] != null ? o[2] : o[0] != null ? o[0] : o[1]) + ".";
+              ArrayList<String> s = new ArrayList<String>();
+              if (o[2] != null) {
+                if (o[2].equals("Thuận pháo") || o[2].equals("Liệt pháo"))
+                  s.add(pick("Cả hai bên đều đưa Pháo vào giữa, ván cờ mở màn bằng thế %n.", "Hai Pháo cùng lên trung lộ ngay từ đầu, tạo nên thế %n.").replace("%n", o[2]));
+                else if (o[2].equals("Đối binh cuộc"))
+                  s.add("Hai bên cùng tiến Tốt đầu, ván cờ mở màn theo thế Đối binh cuộc.");
+                else
+                  s.add(w1 + " mở màn bằng Pháo đầu, " + w2 + " đáp lại bằng thế Bình phong mã. Đây chính là thế " + o[2] + ".");
+                s.add(cap(desc(o[2])));
+              } else {
+                if (o[0] != null) { s.add(pick("%w mở đầu bằng thế %n.", "%w khai cuộc theo thế %n.").replace("%w", w1).replace("%n", o[0])); s.add(cap(desc(o[0]))); }
+                if (o[1] != null) { s.add(pick("%w đáp lại bằng thế %n.", "%w chọn thế %n để đáp lại.").replace("%w", cap(w2)).replace("%n", o[1])); s.add(cap(desc(o[1]))); }
+              }
+              return join(s);
+            }
+
+            // Hậu quả của một nước đi, suy ra từ các mã lý do/quân bị ăn của nước đó
+            static String consequence(String[] x, boolean mineMove) {
+              String cap = x[2] == null ? "" : x[2];
+              String why = x.length > 5 ? x[5] : "";
+              String thr = tok(why, "THR");
+              if (mineMove) {
+                if (cap.length() > 0) return "Hậu quả là ở nước kế tiếp mình ăn được " + cap + " của đối thủ.";
+                if (tok(why, "CHK") != null) return "Hậu quả là mình chiếu tướng ở nước kế tiếp và giành thế chủ động.";
+                if (thr != null && thr.length() > 0) return "Hậu quả là mình tạo được đe dọa vào " + thr.replace("+", " và ") + " của đối thủ, buộc họ phải bị động.";
+                return "Hậu quả là mình nắm thế chủ động ở nước kế tiếp.";
+              }
+              if (cap.length() > 0) return "Nước này giúp đối thủ ăn được " + cap + " của mình.";
+              if (tok(why, "CHK") != null) return "Nước này chiếu tướng, buộc mình phải đỡ và rơi vào thế bị động.";
+              if (thr != null && thr.length() > 0) return "Nước này đe dọa " + thr.replace("+", " và ") + " của mình, buộc mình phải đối phó.";
+              return "Nước này giúp đối thủ giành thế chủ động.";
+            }
+
+            // Phân tích kỹ một nước đi then chốt của đối thủ (d > 0: đối thủ sai, d < 0: đối thủ đi hay)
+            static List<String> keyLines(List<String[]> mv, int i, int d, String bm, int nk, int a, int b) {
+              ArrayList<String> r = new ArrayList<String>();
+              r.add(pick(mix(KEY_LEAD, KEY_LEAD_H)));
+              if (d > 0) {
+                r.add(bm != null ? pick(KEY_MISS).replace("%a", spoken(bm)) : pick(KEY_MISS_NB));
+                r.add(consequence(mv.get(nk), true));
+              } else {
+                r.add(pick(KEY_GOOD));
+                String[] x = mv.get(i);
+                String w = x.length > 5 ? x[5] : "";
+                // ăn quân / chiếu / đe dọa đã được nói ở phần lý do của chính nước này, chỉ bổ sung khi chưa có gì
+                if (x[2].length() == 0 && tok(w, "CHK") == null && (tok(w, "THR") == null || tok(w, "THR").length() == 0)) r.add(consequence(x, false));
+              }
+              int ca = cat(a), cb = cat(b);
+              if (level >= 2 && ca != cb)
+                r.add(pick(SHIFT).replace("%x", CATW[ca]).replace("%y", CATW[cb]));
+              return r;
+            }
+
             // Soạn lời bình: trả về danh sách đoạn văn, mỗi đoạn là một lượt đi của mình cùng phản ứng của đối thủ
             static String lastPly = "";   // lời bình của nước đi cuối cùng (dùng cho lời bình trực tiếp)
 
@@ -2724,9 +3128,45 @@ jobs:
               tagAt.clear();
               int n = mv.size();
               paras.add(pick(INTRO).replace("%n", String.valueOf(n)));
+              String[] termAt = new String[n];
+              int[] bpAt = new int[2];
+              analyze(mv, termAt, bpAt);
+              String op = openingPara(mv, bpAt);
+              if (op.length() > 0) paras.add(op);
+              int termCnt = 0;
               ArrayList<String> cur = new ArrayList<String>();
-              int cm = 0, co = 0, curCat = -1, saidCat = -1, saidAt = -100, swingAt = -1, swing = 0, planAt = -100;
-              String planned = null;
+              int cm = 0, co = 0, curCat = -1, saidCat = -1, saidAt = -100, swingAt = -1, swing = 0;
+              // Tiền xử lý: với mỗi nước của đối thủ, độ lệch điểm giữa hai lần máy tính (trước và sau nước đó),
+              // nước máy cho là tốt nhất của đối thủ, và đánh dấu vài nước then chốt làm thế cờ đổi lớn
+              int[] dd = new int[n], nkAt = new int[n], aa = new int[n], bb = new int[n];
+              boolean[] has = new boolean[n], key = new boolean[n], follow = new boolean[n];
+              String[] best = new String[n];
+              for (int i = 0; i < n; i++) {
+                if ("1".equals(mv.get(i)[0])) continue;
+                int pj = -1, nk = -1;
+                for (int j = i - 1; j >= 0; j--) if ("1".equals(mv.get(j)[3]) && "1".equals(mv.get(j)[0])) { pj = j; break; }
+                for (int k = i + 1; k < n; k++) if ("1".equals(mv.get(k)[3]) && "1".equals(mv.get(k)[0])) { nk = k; break; }
+                if (pj < 0 || nk < 0) continue;
+                int a = parse(mv.get(pj)[4]), b = parse(mv.get(nk)[4]);
+                if (Math.abs(a) >= 20000 || Math.abs(b) >= 20000) continue;
+                has[i] = true; dd[i] = b - a; aa[i] = a; bb[i] = b; nkAt[i] = nk;
+                String[] pm = mv.get(pj);
+                if (pm.length > 6 && pm[6].length() > 0) { String[] pp = pm[6].split(" → "); if (pp.length >= 2) best[i] = pp[1]; }
+              }
+              int maxKey = level >= 2 ? 3 : level == 1 ? 1 : 0;
+              for (int r = 0; r < maxKey; r++) {
+                int bi = -1;
+                for (int i = 0; i < n; i++) {
+                  if (!has[i] || key[i] || Math.abs(dd[i]) < 250) continue;
+                  boolean near = false;
+                  for (int k = 0; k < n; k++) if (key[k] && Math.abs(k - i) < 6) near = true;
+                  if (near) continue;
+                  if (bi < 0 || Math.abs(dd[i]) > Math.abs(dd[bi])) bi = i;
+                }
+                if (bi < 0) break;
+                key[bi] = true;
+                if (dd[bi] > 0) follow[nkAt[bi]] = true;
+              }
               boolean midSaid = false, endSaid = false;
               for (int i = 0; i < n; i++) {
                 String[] m = mv.get(i);
@@ -2743,17 +3183,23 @@ jobs:
                 String ms;
                 if (i == 0) ms = pick(mine ? mix(MINE_OPEN, MINE_OPEN_H) : mix(OPP_OPEN, OPP_OPEN_H));
                 else ms = pick(mine ? mix(MINE_MOVE, MINE_MOVE_H) : mix(OPP_MOVE, OPP_MOVE_H));
-                ms = ms.replace("%s", mvTxt);
+                ms = ms.replace("%p", m[1].split(" ")[0]).replace("%s", mvTxt);
                 if (i > 0 && i % 12 == 0 && level >= 1 && !phase && (ms.startsWith("Mình ") || ms.startsWith("Đối thủ ")))
                   ms = "Đến nước thứ " + (i + 1) + ", " + lc(ms);
                 cur.add(ms);
+                if (level >= 1 && termAt[i] != null && termCnt < (level >= 2 ? 12 : 6) && canUse(mine, "T" + termAt[i], i, 14)
+                    && !(i < 12 && op.contains(termAt[i]))) {
+                  cur.add(pick(TERM).replace("%t", termAt[i]).replace("%d", desc(termAt[i])));
+                  mark(mine, "T" + termAt[i], i);
+                  termCnt++;
+                }
                 boolean hadCap = m[2].length() > 0;
                 if (hadCap) {
                   cur.add(capLine(mine, m[2], tok(why, "CAP")));
                   if (mine) cm++; else co++;
                 }
                 ArrayList<String> extra = new ArrayList<String>();
-                why(extra, mine, why, i, hadCap);
+                why(extra, mine, why, i, hadCap, m[1]);
                 cur.addAll(extra);
                 if (mine) {
                   if ("1".equals(m[3])) {
@@ -2767,32 +3213,21 @@ jobs:
                       saidAt = i;
                     }
                   }
-                  // dự tính: nước đối thủ có thể đáp và nước mình đi tiếp theo (chỉ bản Sâu, cách nhau vài nước)
-                  planned = null;
-                  if (level >= 2 && pv.length() > 0 && i - planAt >= 6) {
-                    String[] pp = pv.split(" → ");
-                    if (pp.length >= 3) { cur.add(pick(PLAN2).replace("%a", spoken(pp[1])).replace("%b", spoken(pp[2]))); planned = pp[1]; planAt = i; }
-                    else if (pp.length == 2) { cur.add(pick(PLAN1).replace("%a", spoken(pp[1]))); planned = pp[1]; planAt = i; }
+                  if (follow[i] && level >= 1) cur.add(pick(KEY_FOLLOW));
+                } else if (has[i]) {
+                  // nhận xét nước của đối thủ: sai lầm thì chỉ ra nước hợp lý hơn; nước then chốt thì giải thích kỹ
+                  int d = dd[i];
+                  int th = level >= 2 ? 100 : 250;
+                  String bm = best[i];
+                  boolean diff = bm != null && !bm.equals(m[1]);
+                  if (key[i]) { cur.addAll(keyLines(mv, i, dd[i], diff ? bm : null, nkAt[i], aa[i], bb[i])); mark(false, "JG", i); }
+                  else if (level >= 1 && d >= th && canUse(false, "JG", i, 3)) {
+                    if (diff) cur.add(pick(mix(d >= 250 ? BAD_BIG : BAD_SMALL, d >= 250 ? BAD_BIG_H : BAD_SMALL_H)).replace("%a", spoken(bm)));
+                    else if (bm == null) cur.add(pick(mix(OPP_BAD, OPP_BAD_H)));
+                    mark(false, "JG", i);
                   }
-                } else {
-                  // đối chiếu với dự tính đã nói, và đánh giá nước đi của đối thủ qua độ lệch điểm giữa hai lần tính
-                  if (planned != null) {
-                    cur.add(pick(planned.equals(m[1]) ? HIT : MISS));
-                    planned = null;
-                  }
-                  int pj = -1, nk = -1;
-                  for (int j = i - 1; j >= 0; j--) if ("1".equals(mv.get(j)[3]) && "1".equals(mv.get(j)[0])) { pj = j; break; }
-                  for (int k = i + 1; k < n; k++) if ("1".equals(mv.get(k)[3]) && "1".equals(mv.get(k)[0])) { nk = k; break; }
-                  if (pj >= 0 && nk >= 0) {
-                    int a = parse(mv.get(pj)[4]), b = parse(mv.get(nk)[4]);
-                    if (Math.abs(a) < 20000 && Math.abs(b) < 20000) {
-                      int d = b - a;
-                      int th = level >= 2 ? 100 : 250;
-                      if (level >= 1 && d >= th && canUse(false, "JG", i, 3)) { cur.add(pick(mix(OPP_BAD, OPP_BAD_H))); mark(false, "JG", i); }
-                      else if (level >= 1 && d <= -th && canUse(false, "JG", i, 3)) { cur.add(pick(mix(OPP_GOOD, OPP_GOOD_H))); mark(false, "JG", i); }
-                      if (Math.abs(d) > Math.abs(swing)) { swing = d; swingAt = i + 1; }
-                    }
-                  }
+                  else if (level >= 1 && d <= -th && canUse(false, "JG", i, 3)) { cur.add(pick(mix(OPP_GOOD, OPP_GOOD_H))); mark(false, "JG", i); }
+                  if (Math.abs(d) > Math.abs(swing)) { swing = d; swingAt = i + 1; }
                 }
                 lastPly = join(cur.subList(mark, cur.size()));
               }

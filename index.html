@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kỳ Phong - Cờ Tướng Online & Đấu Trường Kim Cương</title>
+    <style>
+        :root {
+            --bg-main: #121016;
+            --panel-bg: #1e1925;
+            --border-gold: #d4af37;
+            --accent-red: #8b0000;
+            --accent-green: #2e7d32;
+            --text-light: #f5f5f5;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: var(--bg-main); color: var(--text-light); min-height: 100vh; display: flex; flex-direction: column; }
+
+        /* Navigation Bar */
+        header {
+            background: linear-gradient(180deg, #2a2233 0%, #1a1421 100%);
+            border-bottom: 2px solid var(--border-gold);
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .logo { font-size: 22px; font-weight: bold; color: var(--border-gold); text-shadow: 0 0 8px rgba(212,175,55,0.4); }
+        .nav-tabs { display: flex; gap: 10px; }
+        .tab-btn {
+            background: #2d2538;
+            border: 1px solid #4a3d5c;
+            color: #ccc;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: 0.3s;
+        }
+        .tab-btn.active, .tab-btn:hover {
+            background: var(--border-gold);
+            color: #000;
+            border-color: var(--border-gold);
+        }
+
+        /* User Currency Bar */
+        .user-info { display: flex; gap: 15px; align-items: center; font-size: 14px; }
+        .currency { background: #00000055; padding: 5px 12px; border-radius: 20px; border: 1px solid #444; }
+
+        /* Main Screen Container */
+        main { flex: 1; padding: 20px; display: flex; justify-content: center; align-items: center; }
+        .screen { display: none; width: 100%; max-width: 1100px; }
+        .screen.active { display: flex; }
+
+        /* --- SCREEN 1: BÀN CỜ TƯỚNG --- */
+        #game-screen { gap: 20px; align-items: flex-start; }
+        .board-container {
+            background: #4a2c11;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.8), inset 0 0 15px rgba(0,0,0,0.5);
+            border: 3px solid var(--border-gold);
+        }
+        svg#board { width: 450px; height: 500px; background: #e0bb82; border-radius: 4px; }
+        .game-panel {
+            flex: 1;
+            background: var(--panel-bg);
+            border: 1px solid #332840;
+            border-radius: 10px;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .move-history {
+            height: 200px;
+            background: #120e17;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 10px;
+            overflow-y: auto;
+            font-size: 13px;
+            color: #aaa;
+        }
+
+        /* --- SCREEN 2: ĐẤU TRƯỜNG 16 NGƯỜI --- */
+        #arena-screen { flex-direction: column; gap: 20px; }
+        .arena-header {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-gold);
+            padding: 15px;
+            border-radius: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .bracket-container {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            background: var(--panel-bg);
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid #332840;
+        }
+        .round-column { display: flex; flex-direction: column; gap: 15px; justify-content: space-around; }
+        .match-card {
+            background: #261f30;
+            border: 1px solid #443555;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 12px;
+        }
+        .match-card.active { border-color: var(--border-gold); }
+        .player { display: flex; justify-content: space-between; padding: 4px 0; }
+        .player.winner { color: #4caf50; font-weight: bold; }
+
+        /* --- SCREEN 3: CỬA HÀNG HUY HIỆU --- */
+        #shop-screen { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; width: 100%; }
+        .shop-item {
+            background: var(--panel-bg);
+            border: 1px solid #3d314a;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        .shop-item:hover { border-color: var(--border-gold); }
+        .item-icon { font-size: 40px; }
+        .buy-btn {
+            background: var(--border-gold);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        /* General Button */
+        .action-btn {
+            background: linear-gradient(180deg, #d4af37 0%, #aa820a 100%);
+            border: none;
+            color: #000;
+            padding: 10px 20px;
+            font-weight: bold;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">⚔️ KỲ PHONG ONLINE</div>
+        <div class="nav-tabs">
+            <button class="tab-btn active" onclick="switchScreen('game-screen')">Bàn Cờ</button>
+            <button class="tab-btn" onclick="switchScreen('arena-screen')">Đấu Trường 16 Người</button>
+            <button class="tab-btn" onclick="switchScreen('shop-screen')">Cửa Hàng Huy Hiệu</button>
+        </div>
+        <div class="user-info">
+            <div class="currency">💎 Kim Cương: <span id="user-diamonds">500</span></div>
+            <div class="currency">🏅 Huy Hiệu: <span id="user-badges">12</span></div>
+        </div>
+    </header>
+
+    <main>
+        <!-- SCREEN 1: BÀN CỜ -->
+        <section id="game-screen" class="screen active">
+            <div class="board-container">
+                <svg id="board" viewBox="0 0 900 1000">
+                    <!-- Bàn cờ SVG sẽ được tự động vẽ bằng JS -->
+                </svg>
+            </div>
+            <div class="game-panel">
+                <h3>Ván Đấu Đang Diễn Ra</h3>
+                <p>Đối thủ: <b>Máy / BOT Kỳ Vương</b></p>
+                <div class="move-history" id="history-list">
+                    <i>Trận đấu bắt đầu. Lượt của bên Đỏ.</i>
+                </div>
+                <button class="action-btn" onclick="resetGame()">Ván Mới</button>
+            </div>
+        </section>
+
+        <!-- SCREEN 2: ĐẤU TRƯỜNG 16 NGƯỜI (KNOCKOUT) -->
+        <section id="arena-screen" class="screen">
+            <div class="arena-header">
+                <div>
+                    <h2>🏆 Giải Đấu Loại Trực Tiếp (16 Kỳ Thủ)</h2>
+                    <p style="font-size: 13px; color: #aaa;">Phí tham gia: 50 💎 Kim Cương | Phần thưởng Vô Địch: 5 🏅 Huy Hiệu Cao Cấp</p>
+                </div>
+                <button class="action-btn" onclick="startTournament()">Đăng Ký Tham Gia (50 💎)</button>
+            </div>
+
+            <div class="bracket-container" id="bracket">
+                <!-- Sơ đồ thi đấu sẽ được vẽ động bằng JavaScript -->
+            </div>
+        </section>
+
+        <!-- SCREEN 3: CỬA HÀNG HUY HIỆU -->
+        <section id="shop-screen" class="screen">
+            <div class="shop-item">
+                <div class="item-icon">🪵</div>
+                <h3>Bàn Cờ Custom "Gỗ Hoàng Hoa Lê"</h3>
+                <p>Đổi bằng Huy Hiệu Vô Địch</p>
+                <button class="buy-btn" onclick="buyItem('Bàn Cờ Hoàng Hoa Lê', 5)">5 🏅 Mua ngay</button>
+            </div>
+            <div class="shop-item">
+                <div class="item-icon">👑</div>
+                <h3>Danh Hiệu "Kỳ Vương Bất Bại"</h3>
+                <p>Hiển thị khung tên vàng kim lấp lánh</p>
+                <button class="buy-btn" onclick="buyItem('Danh Hiệu Kỳ Vương', 3)">3 🏅 Mua ngay</button>
+            </div>
+            <div class="shop-item">
+                <div class="item-icon">🏷️</div>
+                <h3>Bảng Tên "Rồng Thần Chầu Nguyệt"</h3>
+                <p>Tăng hiệu ứng xuất hiện khi vào phòng</p>
+                <button class="buy-btn" onclick="buyItem('Bảng Tên Rồng Thần', 2)">2 🏅 Mua ngay</button>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        // --- CHUYỂN MÀN HÌNH ---
+        function switchScreen(screenId) {
+            document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            
+            document.getElementById(screenId).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        // --- VẼ BÀN CỜ SVG ---
+        const svg = document.getElementById('board');
+        function drawBoard() {
+            let html = '';
+            // Lưới bàn cờ
+            for(let i=0; i<10; i++) {
+                html += `<line x1="100" y1="${100 + i*90}" x2="800" y2="${100 + i*90}" stroke="#5c4033" stroke-width="4"/>`;
+            }
+            for(let j=0; j<9; j++) {
+                let x = 100 + j*87.5;
+                html += `<line x1="${x}" y1="100" x2="${x}" y2="460" stroke="#5c4033" stroke-width="4"/>`;
+                html += `<line x1="${x}" y1="550" x2="${x}" y2="910" stroke="#5c4033" stroke-width="4"/>`;
+            }
+            // Sông & Cung Tướng
+            html += `<text x="250" y="520" font-size="36" fill="#8b4513" font-weight="bold">SỞ HÀ</text>`;
+            html += `<text x="550" y="520" font-size="36" fill="#8b4513" font-weight="bold">HÁN GIỚI</text>`;
+            html += `<line x1="362.5" y1="100" x2="537.5" y2="280" stroke="#5c4033" stroke-width="3"/>`;
+            html += `<line x1="537.5" y1="100" x2="362.5" y2="280" stroke="#5c4033" stroke-width="3"/>`;
+            html += `<line x1="362.5" y1="730" x2="537.5" y2="910" stroke="#5c4033" stroke-width="3"/>`;
+            html += `<line x1="537.5" y1="730" x2="362.5" y2="910" stroke="#5c4033" stroke-width="3"/>`;
+
+            // Vẽ Demo Quân Cờ Cơ Bản
+            const pieces = [
+                {x: 450, y: 910, txt: '帥', color: 'red'}, {x: 362.5, y: 910, txt: '仕', color: 'red'}, {x: 537.5, y: 910, txt: '仕', color: 'red'},
+                {x: 450, y: 100, txt: '將', color: 'black'}, {x: 362.5, y: 100, txt: '士', color: 'black'}, {x: 537.5, y: 100, txt: '士', color: 'black'}
+            ];
+
+            pieces.forEach(p => {
+                html += `
+                    <circle cx="${p.x}" cy="${p.y}" r="35" fill="#f0d9b5" stroke="${p.color === 'red' ? '#8b0000' : '#111'}" stroke-width="5"/>
+                    <text x="${p.x}" y="${p.y + 12}" font-size="32" font-weight="bold" fill="${p.color === 'red' ? '#8b0000' : '#111'}" text-anchor="middle">${p.txt}</text>
+                `;
+            });
+
+            svg.innerHTML = html;
+        }
+        drawBoard();
+
+        // --- ĐẤU TRƯỜNG 16 NGƯỜI (BRACKET GENERATOR) ---
+        function renderBracket() {
+            const bracket = document.getElementById('bracket');
+            bracket.innerHTML = `
+                <div class="round-column">
+                    <h4>Vòng 1/8 (16)</h4>
+                    ${createMatchCard('Thắng (Bạn)', 'Đối Thủ A', true)}
+                    ${createMatchCard('Kỳ Thủ 3', 'Kỳ Thủ 4')}
+                    ${createMatchCard('Kỳ Thủ 5', 'Kỳ Thủ 6')}
+                    ${createMatchCard('Kỳ Thủ 7', 'Kỳ Thủ 8')}
+                </div>
+                <div class="round-column">
+                    <h4>Tứ Kết (8)</h4>
+                    ${createMatchCard('Thắng (Bạn)', 'Chờ Cặp 2')}
+                    ${createMatchCard('Chờ Cặp 3', 'Chờ Cặp 4')}
+                </div>
+                <div class="round-column">
+                    <h4>Bán Kết (4)</h4>
+                    ${createMatchCard('Chờ BK1', 'Chờ BK2')}
+                </div>
+                <div class="round-column">
+                    <h4>Chung Kết 🏆</h4>
+                    ${createMatchCard('Chờ CK1', 'Chờ CK2')}
+                </div>
+            `;
+        }
+
+        function createMatchCard(p1, p2, isP1Winner = false) {
+            return `
+                <div class="match-card active">
+                    <div class="player ${isP1Winner ? 'winner' : ''}"><span>${p1}</span> <span>${isP1Winner ? '1' : '0'}</span></div>
+                    <div class="player"><span>${p2}</span> <span>0</span></div>
+                </div>
+            `;
+        }
+        renderBracket();
+
+        function startTournament() {
+            let diamonds = parseInt(document.getElementById('user-diamonds').innerText);
+            if(diamonds >= 50) {
+                document.getElementById('user-diamonds').innerText = diamonds - 50;
+                alert('Đăng ký Đấu Trường 16 Người thành công! Bắt đầu ghép cặp Vòng 1/8...');
+            } else {
+                alert('Bạn không đủ Kim Cương!');
+            }
+        }
+
+        function buyItem(name, cost) {
+            let badges = parseInt(document.getElementById('user-badges').innerText);
+            if(badges >= cost) {
+                document.getElementById('user-badges').innerText = badges - cost;
+                alert(`Bạn đã mua thành công: ${name}!`);
+            } else {
+                alert('Bạn không đủ Huy Hiệu Vô Địch!');
+            }
+        }
+
+        function resetGame() {
+            document.getElementById('history-list').innerHTML = '<i>Ván mới đã bắt đầu. Lượt của bạn!</i>';
+        }
+    </script>
+</body>
+</html>
